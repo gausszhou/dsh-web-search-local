@@ -1,0 +1,4 @@
+# local test artifacts
+probe-*.html
+*.log
+.DS_Store
