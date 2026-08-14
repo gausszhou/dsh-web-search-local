@@ -16,7 +16,9 @@
  *   3. a probe of common local HTTP proxy ports (Clash 7890, v2rayN 10809, …)
  * When a proxy is active every request goes through it (CONNECT tunnel, with
  * redirect following), and a transport-level proxy failure falls back to
- * direct, so bing/baidu still work even if the tunnel is down.
+ * direct, so bing/baidu still work even if the tunnel is down. Baidu always
+ * goes direct (it is a China service and flags foreign exit IPs with a
+ * verification wall).
  *
  * The model-facing `web_search` / `web_fetch` tools keep working unchanged —
  * only the provider selection changes (see the `web` row in cordis.patch.yml).
@@ -75,20 +77,30 @@ function utf8(buf) {
   return new TextDecoder('utf-8').decode(buf)
 }
 
-/** Unwrap common search-engine redirect wrappers into the real target URL. */
+/**
+ * Unwrap search-engine redirect wrappers into the real target URL.
+ * - Bing /ck/a links: the target lives base64-encoded (with a format-marker
+ *   prefix such as "a1") in the `u` query parameter; extract it with a regex
+ *   because URLSearchParams would corrupt '+' as a space.
+ * - DuckDuckGo /l/?uddg= links (absolute or relative).
+ */
 function unwrapUrl(url) {
-  // Bing: https://www.bing.com/ck/a?...&u=<base64 target>
   if (/bing\.com\/ck\/a/i.test(url)) {
     try {
-      const u = new URL(url)
-      const payload = u.searchParams.get('u')
-      if (payload) {
-        const decoded = Buffer.from(payload, 'base64').toString('utf-8')
-        if (/^https?:\/\//i.test(decoded)) return decoded
+      const m = /[?&]u=([^&]+)/.exec(url)
+      if (m) {
+        const payload = decodeURIComponent(m[1])
+        const candidates = [payload, payload.replace(/[-_]/g, (c) => (c === '-' ? '+' : '/'))]
+        if (payload.length > 2) candidates.push(payload.slice(2), payload.slice(2).replace(/[-_]/g, (c) => (c === '-' ? '+' : '/')))
+        for (const candidate of candidates) {
+          try {
+            const decoded = Buffer.from(candidate, 'base64').toString('utf-8')
+            if (/^https?:\/\//i.test(decoded)) return decoded
+          } catch { /* try next */ }
+        }
       }
     } catch { /* keep raw */ }
   }
-  // DuckDuckGo: /l/?uddg=<encoded target> (absolute or relative)
   if (url.startsWith('/')) url = `https://duckduckgo.com${url}`
   if (url.includes('duckduckgo.com/l/')) {
     try {
@@ -234,10 +246,11 @@ function probePort(port) {
  * One GET with the configured routing. Returns `{ status, contentType, body,
  * truncated }`; throws only on transport/TLS/timeout/abort errors. HTTP error
  * statuses are results, not throws. When a proxy is in effect and the tunnel
- * fails at transport level, falls back to a direct fetch.
+ * fails at transport level, falls back to a direct fetch. `direct: true`
+ * forces a direct connection (used for engines that must not be proxied).
  */
-async function request(url, { cfg, signal, timeoutMs, maxBytes, accept }) {
-  const proxy = await resolveProxy(cfg)
+async function request(url, { cfg, signal, timeoutMs, maxBytes, accept, direct = false }) {
+  const proxy = direct ? '' : await resolveProxy(cfg)
   if (!proxy) return directRequest(url, { cfg, signal, timeoutMs, maxBytes, accept })
   try {
     return await proxyRequest(url, proxy, { cfg, signal, timeoutMs, maxBytes, accept })
@@ -441,8 +454,8 @@ function proxyRequest(startUrl, proxyUrl, { cfg, signal, timeoutMs, maxBytes, ac
 
 // ── engines ─────────────────────────────────────────────────────────────────
 
-async function engineText(url, cfg, signal) {
-  const r = await request(url, { cfg, signal, timeoutMs: cfg.searchTimeoutMs, maxBytes: 2_000_000 })
+async function engineText(url, cfg, signal, direct = false) {
+  const r = await request(url, { cfg, signal, timeoutMs: cfg.searchTimeoutMs, maxBytes: 2_000_000, direct })
   if (r.status < 200 || r.status >= 300) throw new Error(`HTTP ${r.status}`)
   return utf8(r.body)
 }
@@ -455,7 +468,7 @@ async function bingSearch(query, cfg, signal) {
   for (const block of matchAll(html, /<li class="b_algo[^"]*"[\s\S]*?<\/li>/gi)) {
     const m = /<h2[^>]*><a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a><\/h2>/i.exec(block[0])
     if (!m) continue
-    let url = unwrapUrl(decodeHref(m[1]))
+    const url = unwrapUrl(decodeHref(m[1]))
     if (!/^https?:\/\//i.test(url)) continue
     let host
     try { host = new URL(url).hostname } catch { continue }
@@ -472,7 +485,7 @@ async function bingSearch(query, cfg, signal) {
 async function duckDuckGoSearch(query, cfg, signal) {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
   const html = await engineText(url, cfg, signal)
-  if (/anomaly/i.test(html.slice(0, 4000)) && /captcha/i.test(html.slice(0, 4000))) throw new Error('blocked by captcha')
+  if (/anomaly|botnet|cc=botnet/i.test(html.slice(0, 8000))) throw new Error('blocked by anomaly check')
   const anchors = matchAll(html, /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)
   const snippets = matchAll(html, /<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi)
   const out = []
@@ -505,8 +518,10 @@ async function mojeekSearch(query, cfg, signal) {
 }
 
 async function baiduSearch(query, cfg, signal) {
+  // Baidu is a China service: always connect directly — proxying it from a
+  // foreign exit IP triggers the "verification wall" and kills the engine.
   const url = `https://www.baidu.com/s?wd=${encodeURIComponent(query)}&rn=${cfg.maxSources + 4}&ie=utf-8`
-  const html = await engineText(url, cfg, signal)
+  const html = await engineText(url, cfg, signal, true)
   if (/百度安全验证|wappass\.baidu\.com|security-check/i.test(html.slice(0, 60000))) throw new Error('verification wall')
   const out = []
   const blocks = matchAll(
