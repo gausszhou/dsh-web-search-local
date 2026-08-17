@@ -6,6 +6,10 @@
   "description": "Keyless multi-engine web search + page fetch providers for the dsh web seam (no DeepSeek dependency).",
   "license": "MIT",
   "author": "gausszhou",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gausszhou/dsh-web-search-local.git"
+  },
   "files": [
     "index.js",
     "README.md",
@@ -20,6 +24,13 @@
     "cordis",
     "plugin"
   ],
+  "engines": {
+    "node": ">=20.3"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "peerDependencies": {
     "@deepseek-ai/dsh-web": ">=0.1.0-rc.0"
   }
