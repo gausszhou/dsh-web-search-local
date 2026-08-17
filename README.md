@@ -2,6 +2,11 @@
 
 **English** | [简体中文](./README.zh-CN.md)
 
+[![npm version](https://img.shields.io/npm/v/@gausszhou/dsh-web-search-local.svg)](https://www.npmjs.com/package/@gausszhou/dsh-web-search-local)
+[![npm downloads](https://img.shields.io/npm/dm/@gausszhou/dsh-web-search-local.svg)](https://www.npmjs.com/package/@gausszhou/dsh-web-search-local)
+[![total downloads](https://img.shields.io/npm/dt/@gausszhou/dsh-web-search-local.svg)](https://www.npmjs.com/package/@gausszhou/dsh-web-search-local)
+[![license](https://img.shields.io/npm/l/@gausszhou/dsh-web-search-local.svg)](./LICENSE)
+
 Keyless, multi-engine web search + page fetch providers for the [DeepSeek Harness](https://www.deepseek.com/harness/) (dsh) `ctx.web` seam. Works with **any model backend — including fully local models** — with **no API keys and no dependency on DeepSeek's server-side search**.
 
 ## Why
@@ -27,7 +32,9 @@ Every request then goes through the proxy (CONNECT tunnel for https, absolute-fo
 
 ## Install
 
-### From npm (recommended after publish)
+### From npm
+
+> Published on the [npm registry](https://www.npmjs.com/package/@gausszhou/dsh-web-search-local).
 
 ```bash
 npm install @gausszhou/dsh-web-search-local

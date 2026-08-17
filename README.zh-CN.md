@@ -2,6 +2,11 @@
 
 为 [DeepSeek Harness](https://www.deepseek.com/harness/)（dsh）`ctx.web` 接口提供的**无密钥多引擎网页搜索与抓取 provider**。适用于**任何模型后端——包括完全本地模型**，**无需 API Key，也不依赖 DeepSeek 的服务端搜索**。
 
+[![npm 版本](https://img.shields.io/npm/v/@gausszhou/dsh-web-search-local.svg)](https://www.npmjs.com/package/@gausszhou/dsh-web-search-local)
+[![npm 月下载量](https://img.shields.io/npm/dm/@gausszhou/dsh-web-search-local.svg)](https://www.npmjs.com/package/@gausszhou/dsh-web-search-local)
+[![累计下载量](https://img.shields.io/npm/dt/@gausszhou/dsh-web-search-local.svg)](https://www.npmjs.com/package/@gausszhou/dsh-web-search-local)
+[![开源协议](https://img.shields.io/npm/l/@gausszhou/dsh-web-search-local.svg)](./LICENSE)
+
 ## 为什么需要它
 
 dsh 内置的 `web_search` 工具与模型无关：它只调用 `ctx.web.search()`。依赖 DeepSeek 的是它的*默认搜索 provider*（`dsh-web-search-deepseek`），该 provider 会把每次查询带上 `DEEPSEEK_API_KEY` 发给 DeepSeek 的 `web_search_20250305` 服务端工具。一旦切换到本地模型（如 Ollama），这个 provider 没有 key，搜索就失效了。
@@ -25,7 +30,9 @@ Node 进程**不会**自动使用操作系统/浏览器的代理。如果 DuckDu
 
 ## 安装
 
-### 通过 npm（发布后推荐）
+### 通过 npm
+
+> 已发布至 [npm registry](https://www.npmjs.com/package/@gausszhou/dsh-web-search-local)。
 
 ```bash
 npm install @gausszhou/dsh-web-search-local
