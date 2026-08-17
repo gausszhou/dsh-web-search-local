@@ -20,17 +20,25 @@
  * goes direct (it is a China service and flags foreign exit IPs with a
  * verification wall).
  *
+ * Error contract: failures are thrown as `WebError` from `@deepseek-ai/dsh-web`
+ * with the official structured codes — `WEB_PROVIDER_ERROR` for engine /
+ * transport / timeout failures (engine errors are aggregated into the message)
+ * and `WEB_ABORTED` for caller cancellation — matching the seam's provider
+ * vocabulary, so `dsh-tool-web` routes them like any other provider.
+ *
  * The model-facing `web_search` / `web_fetch` tools keep working unchanged —
  * only the provider selection changes (see the `web` row in cordis.patch.yml).
  *
- * Zero npm-dependency: Node builtins only (fetch, node:http, node:https,
- * node:net, node:tls, TextDecoder, URL).
+ * No third-party runtime dependencies: Node builtins (fetch, node:http,
+ * node:https, node:net, node:tls, TextDecoder, URL) plus the dsh-provided
+ * `@deepseek-ai/dsh-web` (declared as a peerDependency).
  */
 
 import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
 import tls from 'node:tls'
+import { WebError } from '@deepseek-ai/dsh-web'
 
 export const SEARCH_PROVIDER_ID = 'local-multi'
 export const FETCH_PROVIDER_ID = 'local-fetch'
@@ -594,7 +602,7 @@ function engineList(cfg) {
 
 export async function runSearch(searchReq, cfg, cache, signal) {
   const query = String(searchReq?.query ?? '').trim()
-  if (!query) throw new Error('query must be a non-empty string')
+  if (!query) throw new WebError('query must be a non-empty string', 'WEB_PROVIDER_ERROR')
   const engines = engineList(cfg)
   const cacheKey = `${query}::${engines.join(',')}`
   if (cache) {
@@ -603,7 +611,7 @@ export async function runSearch(searchReq, cfg, cache, signal) {
   }
   const errors = []
   for (const name of engines) {
-    if (signal?.aborted) throw new Error('aborted')
+    if (signal?.aborted) throw new WebError('search aborted', 'WEB_ABORTED', { cause: signal.reason })
     try {
       const sources = await ENGINES[name](query, cfg, signal)
       if (sources.length > 0) {
@@ -612,11 +620,11 @@ export async function runSearch(searchReq, cfg, cache, signal) {
         return copyResult(result)
       }
     } catch (error) {
-      if (signal?.aborted) throw error
+      if (signal?.aborted) throw new WebError('search aborted', 'WEB_ABORTED', { cause: error })
       errors.push(`${name}: ${error?.message ?? error}`)
     }
   }
-  if (errors.length > 0) throw new Error(`all search engines failed (${errors.join('; ')})`)
+  if (errors.length > 0) throw new WebError(`all search engines failed (${errors.join('; ')})`, 'WEB_PROVIDER_ERROR')
   return { sources: [], truncated: false }
 }
 
@@ -634,18 +642,24 @@ export async function fetchUrl(fetchReq, cfg, signal) {
   try {
     parsed = new URL(url)
   } catch {
-    return { url, statusCode: 0, body: { kind: 'text', content: `Invalid URL: ${url}` }, truncated: false }
+    throw new WebError(`invalid URL: ${url}`, 'WEB_PROVIDER_ERROR')
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return { url, statusCode: 0, body: { kind: 'text', content: `Unsupported protocol: ${parsed.protocol}` }, truncated: false }
+    throw new WebError(`unsupported protocol: ${parsed.protocol}`, 'WEB_PROVIDER_ERROR')
   }
-  const r = await request(url, {
-    cfg,
-    signal,
-    timeoutMs: cfg.fetchTimeoutMs,
-    maxBytes: cfg.maxFetchBytes,
-    accept: 'text/html,text/plain,application/json,application/xml,*/*;q=0.8',
-  })
+  let r
+  try {
+    r = await request(url, {
+      cfg,
+      signal,
+      timeoutMs: cfg.fetchTimeoutMs,
+      maxBytes: cfg.maxFetchBytes,
+      accept: 'text/html,text/plain,application/json,application/xml,*/*;q=0.8',
+    })
+  } catch (error) {
+    if (signal?.aborted) throw new WebError('web fetch aborted', 'WEB_ABORTED', { cause: error })
+    throw new WebError(`web fetch failed: ${error?.message ?? error}`, 'WEB_PROVIDER_ERROR', { cause: error })
+  }
   const head = new TextDecoder('utf-8', { fatal: false }).decode(r.body.slice(0, 2048))
   const charset = charsetOf(r.contentType, head)
   let content

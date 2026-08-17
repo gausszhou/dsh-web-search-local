@@ -97,7 +97,8 @@ Remove the `web` override, the `web-search-deepseek` disable, and the inserted r
 ## Notes
 
 - Engines are plain-HTML scraped with regex; markup changes upstream can break an engine — the chain simply falls through to the next one. Errors from every engine are aggregated into the thrown message.
-- Zero npm dependencies: `fetch` + `node:http/https/net/tls` only.
+- No third-party runtime dependencies: `fetch` + `node:http/https/net/tls` only, plus the dsh-provided `@deepseek-ai/dsh-web` (declared as a `peerDependency`; every dsh profile already ships it).
+- Errors follow the seam's provider contract: failures throw `WebError` with `WEB_PROVIDER_ERROR` (engine/transport/timeout, engine errors aggregated) or `WEB_ABORTED` (caller cancellation) — the same vocabulary the official providers use.
 - `web_fetch` needs `tool-web`'s `fetch: true`; the shipped `standard` agent preset ships with `fetch: false` — copy the preset to `$DSH_HOME/.agent-presets/` and flip it there.
 
 ## License

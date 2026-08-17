@@ -95,7 +95,8 @@ config:
 ## 注意事项
 
 - 引擎靠正则抓取纯 HTML；上游改版可能导致某个引擎失效——链路会自动落到下一个引擎。所有引擎的错误会聚合进抛出的异常信息。
-- 零 npm 依赖：只用 `fetch` + `node:http/https/net/tls`。
+- 无第三方运行时依赖：只用 `fetch` + `node:http/https/net/tls`，外加 dsh 自带的 `@deepseek-ai/dsh-web`（以 `peerDependency` 声明；每个 dsh profile 都已内置）。
+- 错误遵循 seam 的 provider 契约：失败时抛 `WebError`，code 为 `WEB_PROVIDER_ERROR`（引擎/传输/超时，引擎错误会聚合进 message）或 `WEB_ABORTED`（调用方取消）——与官方 provider 使用同一套错误词汇。
 - `web_fetch` 需要 `tool-web` 的 `fetch: true`；自带的 `standard` agent 预设默认是 `fetch: false`——把预设复制到 `$DSH_HOME/.agent-presets/` 并在那里打开开关。
 
 ## 许可证

@@ -19,5 +19,8 @@
     "search-provider",
     "cordis",
     "plugin"
-  ]
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh-web": ">=0.1.0-rc.0"
+  }
 }
