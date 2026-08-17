@@ -1,5 +1,5 @@
 {
-  "name": "dsh-web-search-local",
+  "name": "@gausszhou/dsh-web-search-local",
   "version": "0.1.0",
   "private": true,
   "type": "module",
