@@ -65,6 +65,13 @@ export function defaultConfig() {
     maxSources: 12,
     cacheTtlMs: 300000,
     cacheMax: 200,
+    // Pacing & circuit breaking: engine calls are serialized with a minimum
+    // interval (anti rate-limit), and a failing engine is skipped for a
+    // cooldown (long for bot-wall blocks, short for generic failures). Set a
+    // value to 0 to disable that mechanism.
+    engineMinIntervalMs: 1500,
+    engineCooldownMs: 600000,       // captcha / anomaly / verification-wall blocks
+    engineRetryCooldownMs: 60000,   // transport, HTTP error, or empty-result failures
     userAgent: DEFAULT_USER_AGENT,
   }
 }
@@ -397,18 +404,19 @@ function proxyRequest(startUrl, proxyUrl, { cfg, signal, timeoutMs, maxBytes, ac
         }
         const chunks = []
         let total = 0
-        let truncated = false
         res.on('data', (chunk) => {
           if (total + chunk.length > maxBytes) {
+            // Cap reached: `destroy()` means `'end'` will never fire, so settle
+            // here — otherwise the request hangs until the outer timeout.
             res.destroy()
-            truncated = true
+            done({ status, contentType: String(res.headers['content-type'] ?? ''), body: Buffer.concat(chunks), truncated: true })
             return
           }
           chunks.push(chunk)
           total += chunk.length
         })
         res.on('end', () => {
-          done({ status, contentType: String(res.headers['content-type'] ?? ''), body: Buffer.concat(chunks), truncated })
+          done({ status, contentType: String(res.headers['content-type'] ?? ''), body: Buffer.concat(chunks), truncated: false })
         })
         res.on('error', (e) => fail(e))
       }
@@ -462,6 +470,59 @@ function proxyRequest(startUrl, proxyUrl, { cfg, signal, timeoutMs, maxBytes, ac
 
 // ── engines ─────────────────────────────────────────────────────────────────
 
+// ── engine pacing & circuit breaking ─────────────────────────────────────────
+// Engine calls are serialized with a global minimum interval (anti rate-limit),
+// and a failing engine is skipped for a cooldown: long for bot-wall blocks
+// (captcha / anomaly / verification wall), short for generic failures. This is
+// module-level because the cache is per-plugin-instance while pacing must be
+// process-wide to actually protect the engines.
+
+const engineCooldowns = new Map() // engine name -> ms timestamp until which it is skipped
+let lastEngineRequestAt = 0        // last engine call start, for the global min interval
+
+function sleep(ms, signal) {
+  if (ms <= 0) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    signal?.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true })
+  })
+}
+
+/** True for bot-wall style errors that should trip the long cooldown. */
+function isBlockError(error) {
+  const msg = String(error?.message ?? error)
+  return (
+    /blocked by (captcha|anomaly)|anomaly check|verification wall|botnet|cc=botnet/i.test(msg) ||
+    /^HTTP (403|429)$/.test(msg)
+  )
+}
+
+/** Serialize engine calls: wait until the global minimum interval is satisfied. */
+async function paceEngineCalls(cfg, signal) {
+  if (!cfg.engineMinIntervalMs) return
+  const wait = lastEngineRequestAt + cfg.engineMinIntervalMs - Date.now()
+  if (wait > 0) await sleep(wait, signal)
+  lastEngineRequestAt = Date.now()
+}
+
+/** Negative-cache an engine failure so later searches skip it during the cooldown. */
+function noteEngineFailure(name, error, cfg) {
+  const cooldown = isBlockError(error) ? cfg.engineCooldownMs : cfg.engineRetryCooldownMs
+  if (cooldown > 0) engineCooldowns.set(name, Date.now() + cooldown)
+}
+
+/** Remaining cooldown ms for an engine (0 = usable); expired entries are dropped. */
+function engineCoolingDown(name, cfg) {
+  const until = engineCooldowns.get(name)
+  if (!until) return 0
+  const left = until - Date.now()
+  if (left <= 0) {
+    engineCooldowns.delete(name)
+    return 0
+  }
+  return left
+}
+
 async function engineText(url, cfg, signal, direct = false) {
   const r = await request(url, { cfg, signal, timeoutMs: cfg.searchTimeoutMs, maxBytes: 2_000_000, direct })
   if (r.status < 200 || r.status >= 300) throw new Error(`HTTP ${r.status}`)
@@ -491,11 +552,37 @@ async function bingSearch(query, cfg, signal) {
 }
 
 async function duckDuckGoSearch(query, cfg, signal) {
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
-  const html = await engineText(url, cfg, signal)
-  if (/anomaly|botnet|cc=botnet/i.test(html.slice(0, 8000))) throw new Error('blocked by anomaly check')
+  try {
+    const html = await engineText(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, cfg, signal)
+    if (/anomaly|botnet|cc=botnet/i.test(html.slice(0, 8000))) throw new Error('blocked by anomaly check')
+    return parseDdgHtml(html)
+  } catch (error) {
+    // Only bot-wall blocks fall back to the lite endpoint (usually more
+    // tolerant of scripts); transport/timeout failures propagate as-is.
+    if (!isBlockError(error)) throw error
+    const lite = await engineText(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`, cfg, signal)
+    return parseDdgLite(lite)
+  }
+}
+
+function parseDdgHtml(html) {
   const anchors = matchAll(html, /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)
   const snippets = matchAll(html, /<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi)
+  const out = []
+  anchors.forEach((m, i) => {
+    const url = unwrapUrl(decodeHref(m[1]))
+    if (!/^https?:\/\//i.test(url)) return
+    const title = cleanText(m[2], 200)
+    if (!title) return
+    const snippet = snippets[i] ? cleanText(snippets[i][1], 320) : ''
+    out.push({ url, title, ...(snippet ? { snippet } : {}) })
+  })
+  return out
+}
+
+function parseDdgLite(html) {
+  const anchors = matchAll(html, /<a[^>]*rel="nofollow"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)
+  const snippets = matchAll(html, /<td[^>]*class="[^"]*result-snippet[^"]*"[^>]*>([\s\S]*?)<\/td>/gi)
   const out = []
   anchors.forEach((m, i) => {
     const url = unwrapUrl(decodeHref(m[1]))
@@ -612,6 +699,13 @@ export async function runSearch(searchReq, cfg, cache, signal) {
   const errors = []
   for (const name of engines) {
     if (signal?.aborted) throw new WebError('search aborted', 'WEB_ABORTED', { cause: signal.reason })
+    const cooling = engineCoolingDown(name, cfg)
+    if (cooling > 0) {
+      errors.push(`${name}: cooling down (${Math.ceil(cooling / 1000)}s)`)
+      continue
+    }
+    await paceEngineCalls(cfg, signal)
+    if (signal?.aborted) throw new WebError('search aborted', 'WEB_ABORTED', { cause: signal.reason })
     try {
       const sources = await ENGINES[name](query, cfg, signal)
       if (sources.length > 0) {
@@ -621,6 +715,7 @@ export async function runSearch(searchReq, cfg, cache, signal) {
       }
     } catch (error) {
       if (signal?.aborted) throw new WebError('search aborted', 'WEB_ABORTED', { cause: error })
+      noteEngineFailure(name, error, cfg)
       errors.push(`${name}: ${error?.message ?? error}`)
     }
   }

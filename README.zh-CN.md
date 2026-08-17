@@ -83,10 +83,23 @@ config:
   maxFetchBytes: 1048576
   maxSources: 12
   cacheTtlMs: 300000                            # 内存结果缓存
+  engineMinIntervalMs: 1500                     # 引擎请求最小间隔（防限流）
+  engineCooldownMs: 600000                      # 验证墙/验证码后熔断冷却（0 = 关闭）
+  engineRetryCooldownMs: 60000                  # 普通失败后冷却（0 = 关闭）
   userAgent: '<浏览器风格的 UA>'
 ```
 
 私有 [SearXNG](https://docs.searxng.org/) 实例（Docker：`docker run -p 8080:8080 searxng/searxng`）是所有引擎中最稳健的：元搜索聚合、JSON API、无需逐引擎爬取。
+
+## 限流韧性
+
+搜索引擎（尤其是 DuckDuckGo）会限流脚本。以下三个机制让单引擎配置也能稳定使用：
+
+- **节流**——引擎调用串行化，每次间隔至少 `engineMinIntervalMs`，多引擎链不会猛打同一主机。
+- **熔断**——引擎出现机器人墙（`blocked by captcha` / `anomaly check` / 百度的 `verification wall`，或 HTTP 403/429）时，在 `engineCooldownMs`（默认 10 分钟）内跳过；普通失败（传输、HTTP 错误）只触发更短的 `engineRetryCooldownMs`（默认 60 秒）。冷却期间引擎被跳过，原因会聚合进错误信息。
+- **DuckDuckGo lite 兜底**——`html.duckduckgo.com` 端点被机器人墙拦截时，同一查询会改走 `lite.duckduckgo.com/lite/` 重试一次（该端点对脚本更宽容）。
+
+被墙的引擎不会让整个搜索失败（前提是还有其他引擎）；单引擎模式下会快速失败并给出 "cooling down" 原因，而不是反复冲击被墙端点。
 
 ## 回退到 DeepSeek 搜索
 

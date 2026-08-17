@@ -85,10 +85,23 @@ config:
   maxFetchBytes: 1048576
   maxSources: 12
   cacheTtlMs: 300000                            # in-memory result cache
+  engineMinIntervalMs: 1500                     # min gap between engine calls (anti rate-limit)
+  engineCooldownMs: 600000                      # skip engine after captcha/anomaly/verification-wall (0 = off)
+  engineRetryCooldownMs: 60000                  # skip engine after generic failure (0 = off)
   userAgent: '<browser-like UA>'
 ```
 
 A private [SearXNG](https://docs.searxng.org/) instance (Docker: `docker run -p 8080:8080 searxng/searxng`) is the most robust engine of all: meta-search aggregation, a JSON API, no per-engine scraping.
+
+## Rate-limit resilience
+
+Search engines (especially DuckDuckGo) throttle scripts. Three mechanisms keep a single-engine setup usable:
+
+- **Pacing** — engine calls are serialized with a minimum `engineMinIntervalMs` gap, so a multi-engine chain does not hammer one host.
+- **Circuit breaker** — when an engine reports a bot wall (`blocked by captcha` / `anomaly check` / Baidu's `verification wall`, or HTTP 403/429), it is skipped for `engineCooldownMs` (default 10 min); generic failures (transport, HTTP errors) only trip the shorter `engineRetryCooldownMs` (default 60 s). While cooling down the engine is skipped and the failure is reported in the aggregated error.
+- **DuckDuckGo lite fallback** — if the `html.duckduckgo.com` endpoint is bot-walled, the same query is retried once against `lite.duckduckgo.com/lite/`, which is more tolerant of scripts.
+
+A blocked engine never makes the whole search fail if other engines remain; with a single engine it fails fast with a "cooling down" reason instead of hammering the walled endpoint.
 
 ## Revert to DeepSeek search
 
