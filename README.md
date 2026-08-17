@@ -1,5 +1,7 @@
 # dsh-web-search-local
 
+**English** | [简体中文](./README.zh-CN.md)
+
 Keyless, multi-engine web search + page fetch providers for the [DeepSeek Harness](https://www.deepseek.com/harness/) (dsh) `ctx.web` seam. Works with **any model backend — including fully local models** — with **no API keys and no dependency on DeepSeek's server-side search**.
 
 ## Why

@@ -9,6 +9,7 @@
   "files": [
     "index.js",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE"
   ],
   "keywords": [
