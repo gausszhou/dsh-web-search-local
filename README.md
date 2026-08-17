@@ -25,8 +25,33 @@ Every request then goes through the proxy (CONNECT tunnel for https, absolute-fo
 
 ## Install
 
-1. Put this package anywhere the dsh process can read, e.g. `$DSH_HOME/profiles/web/plugins/web-search-local/` (Windows: `C:\Users\<you>\.dsh\profiles\web\plugins\web-search-local\`).
-2. Add to your profile's `cordis.patch.yml` (`$DSH_HOME/profiles/web/cordis.patch.yml` for the web profile):
+### From npm (recommended after publish)
+
+```bash
+npm install @gausszhou/dsh-web-search-local
+```
+
+Then add to your profile's `cordis.patch.yml` (`$DSH_HOME/profiles/web/cordis.patch.yml` for the web profile):
+
+```yaml
+- id: web
+  config:
+    searchProvider: local-multi
+    fetchProvider: local-fetch
+
+- id: web-search-deepseek
+  disabled: true
+
+- insert:
+    - id: web-search-local
+      name: '@gausszhou/dsh-web-search-local'
+      config:
+        engines: [bing, duckduckgo, mojeek, baidu]
+```
+
+### From a local checkout / file path
+
+Put this package anywhere the dsh process can read, e.g. `$DSH_HOME/profiles/web/plugins/web-search-local/` (Windows: `C:\Users\<you>\.dsh\profiles\web\plugins\web-search-local\`). Add to your profile's `cordis.patch.yml` (`$DSH_HOME/profiles/web/cordis.patch.yml` for the web profile):
 
 ```yaml
 - id: web
