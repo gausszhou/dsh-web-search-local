@@ -10,7 +10,7 @@ dsh 内置的 `web_search` 工具与模型无关：它只调用 `ctx.web.search(
 
 | provider id | 能力 | 引擎 |
 | --- | --- | --- |
-| `local-multi` | `web_search` | SearXNG（可选，配置后优先执行）→ Bing → DuckDuckGo → Mojeek → Baidu；第一个出结果的引擎胜出 |
+| `local-multi` | `web_search` | SearXNG（可选，配置后优先执行）→ Bing → Baidu → Sogou → 360；DuckDuckGo 与 Mojeek 保留给配置了代理的网络；第一个出结果的引擎胜出 |
 | `local-fetch` | `web_fetch` | 直接 GET，字符集感知解码（含 gbk），返回 html/text 正文 |
 
 ## 代理 / VPN 支持
@@ -46,7 +46,7 @@ npm install @gausszhou/dsh-web-search-local
     - id: web-search-local
       name: '@gausszhou/dsh-web-search-local'
       config:
-        engines: [bing, duckduckgo, mojeek, baidu]
+        engines: [bing, baidu, sogou, 360]
 ```
 
 ### 本地目录 / 文件路径
@@ -66,7 +66,7 @@ npm install @gausszhou/dsh-web-search-local
     - id: web-search-local
       name: 'file:///C:/Users/<you>/.dsh/profiles/web/plugins/web-search-local/index.js'
       config:
-        engines: [bing, duckduckgo, mojeek, baidu]
+        engines: [bing, baidu, sogou, 360]
 ```
 
 3. 重启 dsh。`web_search` 现在返回纯来源列表（无服务端摘要），且适用于任何模型。
@@ -75,19 +75,21 @@ npm install @gausszhou/dsh-web-search-local
 
 ```yaml
 config:
-  engines: [bing, duckduckgo, mojeek, baidu]   # 优先级顺序
-  searxngBaseUrl: 'http://127.0.0.1:8080'      # 可选；设置后优先执行
-  proxyUrl: ''                                  # '' 自动 | 'off' 直连 | 'http://host:port' 显式指定
+  engines: [bing, baidu, sogou, 360]        # 优先级顺序（默认=大陆网络友好）
+  searxngBaseUrl: 'http://127.0.0.1:8080'   # 可选；设置后优先执行
+  proxyUrl: ''                              # '' 自动 | 'off' 直连 | 'http://host:port' 显式指定
   searchTimeoutMs: 12000
   fetchTimeoutMs: 20000
   maxFetchBytes: 1048576
   maxSources: 12
-  cacheTtlMs: 300000                            # 内存结果缓存
-  engineMinIntervalMs: 1500                     # 引擎请求最小间隔（防限流）
-  engineCooldownMs: 600000                      # 验证墙/验证码后熔断冷却（0 = 关闭）
-  engineRetryCooldownMs: 60000                  # 普通失败后冷却（0 = 关闭）
+  cacheTtlMs: 300000                        # 内存结果缓存
+  engineMinIntervalMs: 1500                 # 引擎请求最小间隔（防限流）
+  engineCooldownMs: 600000                  # 验证墙/验证码后熔断冷却（0 = 关闭）
+  engineRetryCooldownMs: 60000              # 普通失败后冷却（0 = 关闭）
   userAgent: '<浏览器风格的 UA>'
 ```
+
+默认引擎列表针对**中国大陆网络**调整：Bing、Baidu、Sogou、360 都可直连访问，无需 VPN/代理。DuckDuckGo 和 Mojeek 在大陆被墙/不稳定——如果配置了代理（`proxyUrl` 或 `HTTPS_PROXY`），把它们加回来即可，例如 `engines: [bing, baidu, duckduckgo]`。
 
 私有 [SearXNG](https://docs.searxng.org/) 实例（Docker：`docker run -p 8080:8080 searxng/searxng`）是所有引擎中最稳健的：元搜索聚合、JSON API、无需逐引擎爬取。
 
@@ -107,7 +109,7 @@ config:
 
 ## 注意事项
 
-- 引擎靠正则抓取纯 HTML；上游改版可能导致某个引擎失效——链路会自动落到下一个引擎。所有引擎的错误会聚合进抛出的异常信息。
+- 引擎靠正则抓取纯 HTML；上游改版可能导致某个引擎失效——链路会自动落到下一个引擎。所有引擎的错误会聚合进抛出的异常信息。搜狗的 `/link?url=` 加密跳转会在服务端解析（跳转页正文内嵌真实地址）；360 的跳转链接在锚点的 `data-mdurl` 属性里直接暴露真实地址，解析器直接读取。
 - 无第三方运行时依赖：只用 `fetch` + `node:http/https/net/tls`，外加 dsh 自带的 `@deepseek-ai/dsh-web`（以 `peerDependency` 声明；每个 dsh profile 都已内置）。
 - 错误遵循 seam 的 provider 契约：失败时抛 `WebError`，code 为 `WEB_PROVIDER_ERROR`（引擎/传输/超时，引擎错误会聚合进 message）或 `WEB_ABORTED`（调用方取消）——与官方 provider 使用同一套错误词汇。
 - `web_fetch` 需要 `tool-web` 的 `fetch: true`；自带的 `standard` agent 预设默认是 `fetch: false`——把预设复制到 `$DSH_HOME/.agent-presets/` 并在那里打开开关。

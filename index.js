@@ -3,8 +3,9 @@
  *
  * Registers two providers into the `ctx.web` seam:
  *   - search provider id "local-multi": tries engines in order (SearXNG JSON
- *     when configured, then bing → duckduckgo → mojeek → baidu) and returns the
- *     first engine that yields results. No API key, no DeepSeek involvement.
+ *     when configured, then bing → baidu → sogou → 360) and returns the first
+ *     engine that yields results. No API key, no DeepSeek involvement.
+ *     DuckDuckGo and Mojeek remain available for proxy-enabled networks.
  *   - fetch provider id "local-fetch": GETs one http(s) URL, decodes the body
  *     (charset-aware, incl. gbk), returns html/text bodies for web_fetch.
  *
@@ -54,7 +55,10 @@ export function defaultConfig() {
     // Engine order = priority. "searxng" is prepended automatically when
     // searxngBaseUrl is set (a private SearXNG instance is the most robust
     // engine of all: meta-search + JSON API + no per-engine scraping).
-    engines: ['bing', 'duckduckgo', 'mojeek', 'baidu'],
+    // Default is tuned for mainland-China networks: Bing/Baidu/Sogou/360 are
+    // reachable directly, while DuckDuckGo/Mojeek need a proxy — add them back
+    // to the list (e.g. [bing, baidu, duckduckgo]) when a proxy is configured.
+    engines: ['bing', 'baidu', 'sogou', '360'],
     searxngBaseUrl: '',
     // '' = auto (env vars, then probe of common local proxy ports),
     // 'off' = direct connections only, 'http://host:port' = explicit proxy.
@@ -653,6 +657,103 @@ async function baiduSearch(query, cfg, signal) {
   return out
 }
 
+async function sogouSearch(query, cfg, signal) {
+  const url = `https://www.sogou.com/web?query=${encodeURIComponent(query)}`
+  const html = await engineText(url, cfg, signal)
+  if (/antispider|seccode|请输入验证码|安全验证|验证码/i.test(html.slice(0, 80000))) throw new Error('blocked by captcha')
+  const out = parseSogouHtml(html)
+  // Sogou masks most organic results behind /link?url= redirect wrappers whose
+  // stub page embeds the real target in window.location.replace / meta refresh.
+  // Resolve those server-side (bounded, parallel, best-effort) so web_fetch
+  // gets a real page later; unresolvable ones keep the wrapper URL.
+  const links = out.map((s) =>
+    /\/link\?url=/i.test(s.url) ? resolveSogouLink(new URL(s.url, 'https://www.sogou.com').href, cfg, signal) : Promise.resolve(s.url),
+  )
+  const targets = await Promise.allSettled(links)
+  targets.forEach((t, i) => {
+    if (t.status === 'fulfilled' && /^https?:\/\//i.test(t.value)) out[i].url = t.value
+  })
+  return out
+}
+
+function parseSogouHtml(html) {
+  const out = []
+  const titles = matchAll(html, /<h3[^>]*class="vr-title[^"]*"[^>]*>([\s\S]*?)<\/h3>/gi)
+  titles.forEach((m, i) => {
+    const a = /<a\b([^>]*)>([\s\S]*?)<\/a>/i.exec(m[1])
+    if (!a) return
+    const href = /href="([^"]+)"/i.exec(a[1])
+    if (!href) return
+    const url = decodeHref(href[1])
+    if (!/^https?:\/\//i.test(url) && !/^\/link\?url=/i.test(url)) return
+    if (/^https?:\/\//i.test(url) && /sogou\.com\/(web|link)\?/i.test(url)) return // keyword / redirect stubs
+    const title = cleanText(a[2], 200)
+    if (!title) return
+    const next = i + 1 < titles.length ? titles[i + 1].index : Math.min(m.index + 5000, html.length)
+    const snippet = sogouSnippet(html.slice(m.index + m[0].length, next))
+    out.push({ url, title, ...(snippet ? { snippet } : {}) })
+  })
+  return out
+}
+
+function sogouSnippet(win) {
+  const p = /<p[^>]*>([\s\S]*?)<\/p>/i.exec(win)
+  if (p) {
+    const t = cleanText(p[1], 320)
+    if (t.length >= 8) return t
+  }
+  const d = /<div[^>]*class="[^"]*(?:fz-mid|space-txt|str-text-info)[^"]*"[^>]*>([\s\S]*?)<\/div>/i.exec(win)
+  if (d) {
+    const t = cleanText(d[1], 320)
+    if (t.length >= 8) return t
+  }
+  return ''
+}
+
+/** Resolve a sogou /link?url= wrapper to the real target ('' if it fails). */
+async function resolveSogouLink(url, cfg, signal) {
+  const r = await request(url, { cfg, signal, timeoutMs: 4000, maxBytes: 64 * 1024, accept: 'text/html,*/*;q=0.8' })
+  if (r.status < 200 || r.status >= 300) return ''
+  const body = utf8(r.body)
+  const m = /location\.replace\("([^"]+)"\)|content=["']0;URL=['"]?([^'">]+)/i.exec(body)
+  const target = m ? decodeHref(m[1] || m[2]) : ''
+  return /^https?:\/\//i.test(target) ? target : ''
+}
+
+const QIHU_INTERNAL = /(^|\.)(so\.com|360\.cn|360kan\.com|qihoo\.com)$/i
+
+async function qihu360Search(query, cfg, signal) {
+  const url = `https://www.so.com/s?q=${encodeURIComponent(query)}`
+  const html = await engineText(url, cfg, signal)
+  if (/captcha\.qihoo\.com|antispider|验证码/i.test(html.slice(0, 80000))) throw new Error('blocked by captcha')
+  return parseQihu360Html(html)
+}
+
+function parseQihu360Html(html) {
+  const out = []
+  for (const m of matchAll(html, /<li class="res-list[^>]*">([\s\S]*?)<\/li>/gi)) {
+    const block = m[1]
+    const tm = /<h3[^>]*class="res-title[^"]*"[^>]*>\s*<a\b([^>]*)>([\s\S]*?)<\/a>\s*<\/h3>/i.exec(block)
+    if (!tm) continue
+    const attrs = tm[1]
+    // 360 masks links behind /link?m= wrappers but always embeds the real
+    // target in the anchor's data-mdurl attribute — prefer it over href.
+    const mdurl = /data-mdurl="([^"]+)"/i.exec(attrs)
+    const href = /href="([^"]+)"/i.exec(attrs)
+    const url = mdurl ? decodeHref(mdurl[1]) : href ? decodeHref(href[1]) : ''
+    if (!/^https?:\/\//i.test(url)) continue
+    let host
+    try { host = new URL(url).hostname } catch { continue }
+    if (QIHU_INTERNAL.test(host)) continue
+    const title = cleanText(tm[2], 200)
+    if (!title) continue
+    const p = /<p[^>]*class="[^"]*res-desc[^"]*"[^>]*>([\s\S]*?)<\/p>/i.exec(block)
+    const snippet = p ? cleanText(p[1], 320) : ''
+    out.push({ url, title, ...(snippet ? { snippet } : {}) })
+  }
+  return out
+}
+
 async function searxngSearch(query, cfg, signal) {
   const base = String(cfg.searxngBaseUrl || '').replace(/\/+$/, '')
   if (!base) return []
@@ -681,6 +782,8 @@ const ENGINES = {
   duckduckgo: duckDuckGoSearch,
   mojeek: mojeekSearch,
   baidu: baiduSearch,
+  sogou: sogouSearch,
+  '360': qihu360Search,
   searxng: searxngSearch,
 }
 
@@ -688,7 +791,8 @@ function engineList(cfg) {
   const list = []
   if (cfg.searxngBaseUrl) list.push('searxng')
   for (const name of cfg.engines ?? []) {
-    if (typeof ENGINES[name] === 'function' && !list.includes(name)) list.push(name)
+    const key = String(name) // YAML flow sets like [bing, baidu, sogou, 360] deliver the id as a number
+    if (typeof ENGINES[key] === 'function' && !list.includes(key)) list.push(key)
   }
   return list
 }

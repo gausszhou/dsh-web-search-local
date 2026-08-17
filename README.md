@@ -12,7 +12,7 @@ This package registers two providers that do the HTTP themselves:
 
 | provider id | capability | engines |
 | --- | --- | --- |
-| `local-multi` | `web_search` | SearXNG (optional, runs first when configured) → Bing → DuckDuckGo → Mojeek → Baidu; the first engine with results wins |
+| `local-multi` | `web_search` | SearXNG (optional, runs first when configured) → Bing → Baidu → Sogou → 360; DuckDuckGo & Mojeek remain available for proxy-enabled networks; the first engine with results wins |
 | `local-fetch` | `web_fetch` | direct GET, charset-aware decoding (incl. gbk), html/text bodies |
 
 ## Proxy / VPN support
@@ -48,7 +48,7 @@ Then add to your profile's `cordis.patch.yml` (`$DSH_HOME/profiles/web/cordis.pa
     - id: web-search-local
       name: '@gausszhou/dsh-web-search-local'
       config:
-        engines: [bing, duckduckgo, mojeek, baidu]
+        engines: [bing, baidu, sogou, 360]
 ```
 
 ### From a local checkout / file path
@@ -68,7 +68,7 @@ Put this package anywhere the dsh process can read, e.g. `$DSH_HOME/profiles/web
     - id: web-search-local
       name: 'file:///C:/Users/<you>/.dsh/profiles/web/plugins/web-search-local/index.js'
       config:
-        engines: [bing, duckduckgo, mojeek, baidu]
+        engines: [bing, baidu, sogou, 360]
 ```
 
 3. Restart dsh. `web_search` now returns plain source lists (no server-side summary) and works with any model.
@@ -77,19 +77,21 @@ Put this package anywhere the dsh process can read, e.g. `$DSH_HOME/profiles/web
 
 ```yaml
 config:
-  engines: [bing, duckduckgo, mojeek, baidu]   # priority order
-  searxngBaseUrl: 'http://127.0.0.1:8080'      # optional; runs first when set
-  proxyUrl: ''                                  # '' auto | 'off' | 'http://host:port'
+  engines: [bing, baidu, sogou, 360]        # priority order (default = mainland-China friendly)
+  searxngBaseUrl: 'http://127.0.0.1:8080'   # optional; runs first when set
+  proxyUrl: ''                              # '' auto | 'off' | 'http://host:port'
   searchTimeoutMs: 12000
   fetchTimeoutMs: 20000
   maxFetchBytes: 1048576
   maxSources: 12
-  cacheTtlMs: 300000                            # in-memory result cache
-  engineMinIntervalMs: 1500                     # min gap between engine calls (anti rate-limit)
-  engineCooldownMs: 600000                      # skip engine after captcha/anomaly/verification-wall (0 = off)
-  engineRetryCooldownMs: 60000                  # skip engine after generic failure (0 = off)
+  cacheTtlMs: 300000                        # in-memory result cache
+  engineMinIntervalMs: 1500                 # min gap between engine calls (anti rate-limit)
+  engineCooldownMs: 600000                  # skip engine after captcha/anomaly/verification-wall (0 = off)
+  engineRetryCooldownMs: 60000              # skip engine after generic failure (0 = off)
   userAgent: '<browser-like UA>'
 ```
+
+The default engine list is tuned for **mainland-China networks**: Bing, Baidu, Sogou and 360 are reachable directly, with no VPN/proxy required. DuckDuckGo and Mojeek are blocked/unreliable there — if you have a proxy (`proxyUrl` or `HTTPS_PROXY`), add them back, e.g. `engines: [bing, baidu, duckduckgo]`.
 
 A private [SearXNG](https://docs.searxng.org/) instance (Docker: `docker run -p 8080:8080 searxng/searxng`) is the most robust engine of all: meta-search aggregation, a JSON API, no per-engine scraping.
 
@@ -109,7 +111,7 @@ Remove the `web` override, the `web-search-deepseek` disable, and the inserted r
 
 ## Notes
 
-- Engines are plain-HTML scraped with regex; markup changes upstream can break an engine — the chain simply falls through to the next one. Errors from every engine are aggregated into the thrown message.
+- Engines are plain-HTML scraped with regex; markup changes upstream can break an engine — the chain simply falls through to the next one. Errors from every engine are aggregated into the thrown message. Sogou's masked `/link?url=` wrappers are resolved server-side (the stub page embeds the real target); 360's wrappers expose the real URL in the anchor's `data-mdurl` attribute, which the parser reads directly.
 - No third-party runtime dependencies: `fetch` + `node:http/https/net/tls` only, plus the dsh-provided `@deepseek-ai/dsh-web` (declared as a `peerDependency`; every dsh profile already ships it).
 - Errors follow the seam's provider contract: failures throw `WebError` with `WEB_PROVIDER_ERROR` (engine/transport/timeout, engine errors aggregated) or `WEB_ABORTED` (caller cancellation) — the same vocabulary the official providers use.
 - `web_fetch` needs `tool-web`'s `fetch: true`; the shipped `standard` agent preset ships with `fetch: false` — copy the preset to `$DSH_HOME/.agent-presets/` and flip it there.

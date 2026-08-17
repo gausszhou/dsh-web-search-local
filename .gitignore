@@ -2,3 +2,4 @@
 probe-*.html
 *.log
 .DS_Store
+node_modules/

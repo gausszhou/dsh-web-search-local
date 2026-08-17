@@ -3,7 +3,7 @@
 // module-level, so tests share state: each scenario uses its own cooldown
 // value and sleeps between scenarios to let expired cooldowns drop.
 import { createServer } from 'node:http'
-import { runSearch, fetchUrl, defaultConfig } from './index.js'
+import { runSearch, fetchUrl, defaultConfig } from '../index.js'
 
 const results = []
 function check(name, ok, detail = '') {
@@ -94,6 +94,24 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
     check('happy path', r.sources.length > 0, `${r.sources.length} sources`)
   } catch (e) {
     check('happy path', false, e.message.slice(0, 90))
+  }
+}
+
+// ── 6. New engines: sogou + 360 (real network, best effort) ─────────────────
+// Both engines are mainland-China reachable; captcha walls are environmental,
+// so a block is reported as a skip rather than a failure.
+{
+  for (const [label, engine] of [['sogou', 'sogou'], ['360', '360']]) {
+    const cfg = { ...defaultConfig(), engines: [engine], engineMinIntervalMs: 0, searchTimeoutMs: 10000, engineCooldownMs: 0, engineRetryCooldownMs: 0 }
+    try {
+      const r = await runSearch({ query: '人工智能' }, cfg, null)
+      const urlsOk = r.sources.length > 0 && r.sources.every((s) => /^https?:\/\//i.test(s.url))
+      check(`${label} engine`, urlsOk, `${r.sources.length} sources` + (urlsOk ? ', all http(s) URLs' : `, sample: ${r.sources[0]?.url?.slice(0, 60)}`))
+    } catch (e) {
+      const msg = e.message || ''
+      if (/blocked by captcha|cooling down/i.test(msg)) check(`${label} engine (skipped: environmental)`, true, msg.slice(0, 80))
+      else check(`${label} engine`, false, msg.slice(0, 90))
+    }
   }
 }
 
