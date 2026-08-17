@@ -1,8 +1,22 @@
 {
   "name": "@gausszhou/dsh-web-search-local",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "main": "index.js",
-  "description": "Keyless multi-engine web search + page fetch providers for the dsh web seam (no DeepSeek dependency)."
+  "description": "Keyless multi-engine web search + page fetch providers for the dsh web seam (no DeepSeek dependency).",
+  "license": "MIT",
+  "author": "gausszhou",
+  "files": [
+    "index.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "web-search",
+    "search-provider",
+    "cordis",
+    "plugin"
+  ]
 }
