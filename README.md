@@ -99,7 +99,7 @@ Search engines (especially DuckDuckGo) throttle scripts. Three mechanisms keep a
 
 - **Pacing** — engine calls are serialized with a minimum `engineMinIntervalMs` gap, so a multi-engine chain does not hammer one host.
 - **Circuit breaker** — when an engine reports a bot wall (`blocked by captcha` / `anomaly check` / Baidu's `verification wall`, or HTTP 403/429), it is skipped for `engineCooldownMs` (default 10 min); generic failures (transport, HTTP errors) only trip the shorter `engineRetryCooldownMs` (default 60 s). While cooling down the engine is skipped and the failure is reported in the aggregated error.
-- **DuckDuckGo lite fallback** — if the `html.duckduckgo.com` endpoint is bot-walled, the same query is retried once against `lite.duckduckgo.com/lite/`, which is more tolerant of scripts.
+- **DuckDuckGo lite fallback** — if the `html.duckduckgo.com` endpoint is bot-walled, the same query is retried once against `lite.duckduckgo.com/lite/`, which is more tolerant of scripts. If the lite endpoint is walled too, the engine reports `blocked by anomaly check (html and lite)` and trips the long `engineCooldownMs` breaker instead of hammering both endpoints on every search.
 
 A blocked engine never makes the whole search fail if other engines remain; with a single engine it fails fast with a "cooling down" reason instead of hammering the walled endpoint.
 

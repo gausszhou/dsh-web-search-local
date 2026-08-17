@@ -97,7 +97,7 @@ config:
 
 - **节流**——引擎调用串行化，每次间隔至少 `engineMinIntervalMs`，多引擎链不会猛打同一主机。
 - **熔断**——引擎出现机器人墙（`blocked by captcha` / `anomaly check` / 百度的 `verification wall`，或 HTTP 403/429）时，在 `engineCooldownMs`（默认 10 分钟）内跳过；普通失败（传输、HTTP 错误）只触发更短的 `engineRetryCooldownMs`（默认 60 秒）。冷却期间引擎被跳过，原因会聚合进错误信息。
-- **DuckDuckGo lite 兜底**——`html.duckduckgo.com` 端点被机器人墙拦截时，同一查询会改走 `lite.duckduckgo.com/lite/` 重试一次（该端点对脚本更宽容）。
+- **DuckDuckGo lite 兜底**——`html.duckduckgo.com` 端点被机器人墙拦截时，同一查询会改走 `lite.duckduckgo.com/lite/` 重试一次（该端点对脚本更宽容）。若 lite 端点也被墙，引擎会报告 `blocked by anomaly check (html and lite)` 并触发长冷却 `engineCooldownMs`，而不是每次搜索都反复冲击两个端点。
 
 被墙的引擎不会让整个搜索失败（前提是还有其他引擎）；单引擎模式下会快速失败并给出 "cooling down" 原因，而不是反复冲击被墙端点。
 

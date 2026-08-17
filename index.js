@@ -554,15 +554,23 @@ async function bingSearch(query, cfg, signal) {
 async function duckDuckGoSearch(query, cfg, signal) {
   try {
     const html = await engineText(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, cfg, signal)
-    if (/anomaly|botnet|cc=botnet/i.test(html.slice(0, 8000))) throw new Error('blocked by anomaly check')
+    if (isDdgBlocked(html)) throw new Error('blocked by anomaly check')
     return parseDdgHtml(html)
   } catch (error) {
     // Only bot-wall blocks fall back to the lite endpoint (usually more
     // tolerant of scripts); transport/timeout failures propagate as-is.
     if (!isBlockError(error)) throw error
     const lite = await engineText(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`, cfg, signal)
+    // Lite blocked too: surface a block error so runSearch trips the long
+    // circuit-breaker cooldown instead of hammering both endpoints every search.
+    if (isDdgBlocked(lite)) throw new Error('blocked by anomaly check (html and lite)')
     return parseDdgLite(lite)
   }
+}
+
+/** DDG serves an anomaly/bot-wall page instead of results (also on HTTP 202). */
+function isDdgBlocked(html) {
+  return /anomaly|botnet|cc=botnet/i.test(String(html).slice(0, 8000))
 }
 
 function parseDdgHtml(html) {
