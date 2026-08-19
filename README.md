@@ -113,6 +113,18 @@ Search engines (especially DuckDuckGo) throttle scripts. Three mechanisms keep a
 
 A blocked engine never makes the whole search fail if other engines remain; with a single engine it fails fast with a "cooling down" reason instead of hammering the walled endpoint.
 
+## Model-specified engine
+
+The model can steer which engine a search uses, per call, two ways:
+
+1. **Tool** — alongside the official `web_search`, this plugin registers `web_search_engine` with two optional arguments:
+   - `engine`: one engine — `searxng`, `google`, `duckduckgo`, `mojeek`, `bing`, `baidu`, `sogou`, `360`
+   - `engines`: an ordered priority list of engines
+   When neither is given, the call degrades to the configured default chain (global-first with CN fallback), exactly like `web_search`.
+2. **Provider request** — any direct caller of `ctx.web.search({ query, engine })` or `ctx.web.search({ query, engines })` gets the same override; unknown engine names fail with `WEB_PROVIDER_ERROR` listing the valid ids.
+
+An explicit override replaces the configured chain entirely (including the SearXNG auto-prepend) — the model's explicit choice wins. Pacing, circuit breaking, and `skipWithoutProxy` still apply to the requested engines, so a pinned-but-unreachable engine fails fast instead of breaking the search.
+
 ## Revert to DeepSeek search
 
 Remove the `web` override, the `web-search-deepseek` disable, and the inserted row from `cordis.patch.yml`.

@@ -96,7 +96,51 @@ const listen = (server) => new Promise((r) => server.listen(0, '127.0.0.1', r))
   }
 }
 
-// ── 5. Block errors (HTTP 429) trip the LONG cooldown ───────────────────────
+// ── 5. request-level engine override: engine/engines beat the config ────────
+// Runs before the 429/cooldown scenario: this scenario calls searxng, and must
+// not inherit the long searxng cooldown that one trips.
+{
+  // Config names bing, request names searxng (no searxngBaseUrl): an honored
+  // override returns instantly with 0 sources; an ignored one would hit bing
+  // over the network (slow and/or with results).
+  const cfg = { ...defaultConfig(), engines: ['bing'], proxyUrl: 'off', engineMinIntervalMs: 0, searchTimeoutMs: 8000 }
+  const t0 = Date.now()
+  const r = await runSearch({ query: 'x', engine: 'searxng' }, cfg, null)
+  const dt = Date.now() - t0
+  check('engine override beats config', r.sources.length === 0 && dt < 1500, `${r.sources.length} sources in ${dt}ms (bing would be attempted if ignored)`)
+
+  // End-to-end through a fake searxng server with the override naming searxng.
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ results: [{ url: 'https://override.example.com/x', title: 'Override result', content: 'from the fake searxng server' }] }))
+  })
+  await listen(server)
+  const port = server.address().port
+  const cfg2 = { ...defaultConfig(), searxngBaseUrl: `http://127.0.0.1:${port}`, engines: ['bing'], proxyUrl: 'off', engineMinIntervalMs: 0 }
+  const r2 = await runSearch({ query: 'x', engines: ['searxng'] }, cfg2, null)
+  server.close()
+  server.closeAllConnections?.()
+  check('engine override (engines array) end-to-end', r2.sources[0]?.url === 'https://override.example.com/x', JSON.stringify(r2.sources))
+}
+
+// ── 6. engine override validation ───────────────────────────────────────────
+{
+  const cfg = { ...defaultConfig(), engines: [], proxyUrl: 'off' }
+  try {
+    await runSearch({ query: 'x', engine: 'yandex' }, cfg, null)
+    check('unknown engine → WEB_PROVIDER_ERROR', false, 'did not throw')
+  } catch (e) {
+    check('unknown engine → WEB_PROVIDER_ERROR', e.code === 'WEB_PROVIDER_ERROR' && /unknown search engine "yandex"/.test(e.message), e.message.slice(0, 90))
+  }
+  try {
+    await runSearch({ query: 'x', engines: [] }, cfg, null)
+    check('empty engines override → WEB_PROVIDER_ERROR', false, 'did not throw')
+  } catch (e) {
+    check('empty engines override → WEB_PROVIDER_ERROR', e.code === 'WEB_PROVIDER_ERROR', e.message.slice(0, 90))
+  }
+}
+
+// ── 7. Block errors (HTTP 429) trip the LONG cooldown ───────────────────────
 {
   const server = createServer((req, res) => {
     res.writeHead(429, { 'content-type': 'text/plain' })
@@ -116,7 +160,7 @@ const listen = (server) => new Promise((r) => server.listen(0, '127.0.0.1', r))
   server.closeAllConnections?.()
 }
 
-// ── 6. google engine: parseGoogleHtml (modern layout, unit) ─────────────────
+// ── 8. google engine: parseGoogleHtml (modern layout, unit) ─────────────────
 {
   const html = `<div id="search">
     <div class="g">
@@ -148,7 +192,7 @@ const listen = (server) => new Promise((r) => server.listen(0, '127.0.0.1', r))
   check('google parseGoogleHtml (modern)', ok, JSON.stringify(src))
 }
 
-// ── 7. google engine: parseGoogleHtml (basic gbv=1 layout, unit) ────────────
+// ── 9. google engine: parseGoogleHtml (basic gbv=1 layout, unit) ────────────
 {
   const html = `<ol id="rso">
     <li class="g">
@@ -178,7 +222,7 @@ const listen = (server) => new Promise((r) => server.listen(0, '127.0.0.1', r))
   check('google parseGoogleHtml (basic/gbv=1)', ok, JSON.stringify(src))
 }
 
-// ── 8. skipWithoutProxy: no proxy → google/ddg/mojeek skipped fast ───────────
+// ── 10. skipWithoutProxy: no proxy → google/ddg/mojeek skipped fast ─────────
 {
   const cfg = { ...defaultConfig(), engines: ['google', 'duckduckgo', 'mojeek'], proxyUrl: 'off', engineMinIntervalMs: 0 }
   const t0 = Date.now()
@@ -192,7 +236,7 @@ const listen = (server) => new Promise((r) => server.listen(0, '127.0.0.1', r))
   }
 }
 
-// ── 9. skipWithoutProxy: [] restores attempting the engines ─────────────────
+// ── 11. skipWithoutProxy: [] restores attempting the engines ────────────────
 {
   const cfg = { ...defaultConfig(), engines: ['google'], proxyUrl: 'off', skipWithoutProxy: [], engineMinIntervalMs: 0, engineCooldownMs: 0, engineRetryCooldownMs: 0, searchTimeoutMs: 2500 }
   try {

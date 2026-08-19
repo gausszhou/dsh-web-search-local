@@ -13,6 +13,10 @@
  *     Sources carry url/title/snippet and, when the engine renders a date,
  *     publishedAt (normalized YYYY-MM-DD) — the same optional field the
  *     official provider fills from its page_age metadata.
+ *   - The model can steer the engine per call: the sibling `web_search_engine`
+ *     tool accepts `engine`/`engines`, and the provider also honors them on any
+ *     `ctx.web.search()` request; calls without an override degrade to the
+ *     configured chain.
  *   - fetch provider id "local-fetch": GETs one http(s) URL, decodes the body
  *     (charset-aware, incl. gbk), returns html/text bodies for web_fetch.
  *
@@ -986,10 +990,34 @@ function engineList(cfg) {
 
 // ── provider implementations ────────────────────────────────────────────────
 
+/**
+ * Resolve a per-call engine override from the search request: `request.engine`
+ * (one engine) or `request.engines` (ordered priority list). An explicit
+ * override REPLACES the configured chain entirely (no searxng auto-prepend) —
+ * the model's explicit choice wins. Returns null when the caller left the
+ * engines unspecified, so the configured chain applies (the degradation path).
+ */
+function requestedEngines(searchReq) {
+  let raw = null
+  if (Array.isArray(searchReq?.engines)) raw = searchReq.engines
+  else if (typeof searchReq?.engine === 'string' && searchReq.engine.trim().length > 0) raw = [searchReq.engine]
+  else return null
+  const list = []
+  for (const name of raw) {
+    const key = String(name)
+    if (typeof ENGINES[key] !== 'function') {
+      throw new WebError(`unknown search engine "${key}" (known: ${Object.keys(ENGINES).join(', ')})`, 'WEB_PROVIDER_ERROR')
+    }
+    if (!list.includes(key)) list.push(key)
+  }
+  if (list.length === 0) throw new WebError('engine override must name at least one engine', 'WEB_PROVIDER_ERROR')
+  return list
+}
+
 export async function runSearch(searchReq, cfg, cache, signal) {
   const query = String(searchReq?.query ?? '').trim()
   if (!query) throw new WebError('query must be a non-empty string', 'WEB_PROVIDER_ERROR')
-  const engines = engineList(cfg)
+  const engines = requestedEngines(searchReq) ?? engineList(cfg)
   // Engines that need a proxy (per skipWithoutProxy) are resolved once per
   // search: with no proxy available they are skipped outright instead of
   // burning a searchTimeoutMs each on a doomed connect attempt.
@@ -1082,6 +1110,171 @@ export async function fetchUrl(fetchReq, cfg, signal) {
   }
 }
 
+// ── model-facing tool: web_search_engine ────────────────────────────────────
+// The official `web_search` tool (dsh-tool-web) is locked to a { query } schema
+// and forwards only { query, maxResults } to the seam, so a model can never
+// steer the engine through it — and its registry lives in the shared global
+// tool layer, so shadowing it from a plugin would throw on duplicate names.
+// Instead we register a sibling tool, `web_search_engine`, with optional
+// `engine` / `engines` arguments that are forwarded to the provider. When the
+// model omits them, `ctx.web.search` still hits our provider with no override
+// and the configured engine chain (the degradation path) applies. Rendering
+// and presentation replicate dsh-tool-web's behavior byte-for-byte (local
+// copies: no extra runtime dependency, and the official package may be absent).
+
+const WEB_SEARCH_ENGINE_NAMES = Object.keys(ENGINES).join(', ')
+
+/** Display label for a source: its title, else its hostname. */
+function sourceLabel(url, title) {
+  if (title !== undefined && title.length > 0) return title
+  try { return new URL(url).hostname } catch { return url }
+}
+
+/** The official tool's model-facing text block: content + markdown source list. */
+function formatSearchOutput(result) {
+  const parts = []
+  if (result.content !== undefined && result.content.length > 0) parts.push(result.content)
+  if (result.sources.length > 0) {
+    const lines = result.sources.map((source) => {
+      const label = sourceLabel(source.url, source.title)
+      const meta = []
+      if (source.snippet !== undefined && source.snippet.length > 0) meta.push(source.snippet)
+      if (source.publishedAt !== undefined && source.publishedAt.length > 0) meta.push(`(${source.publishedAt})`)
+      const suffix = meta.length > 0 ? ` — ${meta.join(' ')}` : ''
+      return `- [${label}](${source.url})${suffix}`
+    })
+    parts.push(`Sources:\n${lines.join('\n')}`)
+  } else if (result.content === undefined || result.content.length === 0) parts.push('No results found.')
+  if (result.truncated) parts.push(`(Showing the first ${result.sources.length} sources. Refine the query for more.)`)
+  parts.push('Cite the relevant URLs above as markdown links in your answer.')
+  return parts.join('\n\n')
+}
+
+/** Project one source to `{ url, title?, snippet?, publishedAt? }`, omitting absent fields. */
+function projectSource(source) {
+  return {
+    url: source.url,
+    ...(source.title !== undefined ? { title: source.title } : {}),
+    ...(source.snippet !== undefined ? { snippet: source.snippet } : {}),
+    ...(source.publishedAt !== undefined ? { publishedAt: source.publishedAt } : {}),
+  }
+}
+
+/** The official tool's replayable presentation meta from a search value. */
+function searchMetaFromValue(value) {
+  return {
+    sources: value.sources.map(projectSource),
+    truncated: value.truncated,
+    ...(value.content !== undefined ? { answer: value.content } : {}),
+  }
+}
+
+/** Narrow opaque tool-result meta to a valid search meta (else undefined). */
+function searchMetaFromResult(meta) {
+  if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) return undefined
+  const { sources, truncated, answer } = meta
+  const validSource = (v) =>
+    typeof v === 'object' && v !== null && !Array.isArray(v) &&
+    typeof v.url === 'string' &&
+    (v.title === undefined || typeof v.title === 'string') &&
+    (v.snippet === undefined || typeof v.snippet === 'string') &&
+    (v.publishedAt === undefined || typeof v.publishedAt === 'string')
+  if (!Array.isArray(sources) || !sources.every(validSource)) return undefined
+  if (typeof truncated !== 'boolean') return undefined
+  return { sources, truncated, ...(answer !== undefined ? { answer } : {}) }
+}
+
+/** The official search-result card; undefined falls back to the generic card. */
+function presentSearchResult(args, result) {
+  if (result.isError) return undefined
+  const meta = searchMetaFromResult(result.meta)
+  if (meta === undefined) return undefined
+  return {
+    card: 'web',
+    kind: 'search',
+    title: args.query,
+    sources: meta.sources,
+    truncated: meta.truncated,
+    ...(meta.answer !== undefined ? { answer: meta.answer } : {}),
+  }
+}
+
+/**
+ * Register the `web_search_engine` tool when the tools service is available
+ * (best-effort: a profile without the tool stack keeps the providers only).
+ * The model may pin one engine (`engine`) or an ordered list (`engines`);
+ * omitting both degrades to the configured default chain.
+ */
+function registerEngineSearchTool(ctx, cfg) {
+  let tools
+  try { tools = ctx.get('tools') } catch { return }
+  if (!tools || typeof tools.register !== 'function') return
+  let systemPrompt
+  try { systemPrompt = ctx.get('systemPrompt') } catch { /* no prompt section */ }
+  systemPrompt?.section?.({
+    name: 'tool:web_search_engine',
+    order: 111,
+    text: 'web_search_engine is web_search with engine control: pass `engine` (one of ' +
+      `${WEB_SEARCH_ENGINE_NAMES}) or an ordered \`engines\` list to pin the engine(s); ` +
+      'omit both to use the default engine chain.',
+  })
+  tools.register({
+    name: 'web_search_engine',
+    description:
+      'Search the web, optionally pinning the search engine. Set `engine` to one of ' +
+      `${WEB_SEARCH_ENGINE_NAMES}, or \`engines\` to an ordered priority list. ` +
+      'When neither is given, the configured default engine chain is used. Returns sources to cite.',
+    parameters: {
+      query: { type: 'string', required: true, description: 'The search query.' },
+      engine: { type: 'string', description: `One engine to use (${WEB_SEARCH_ENGINE_NAMES}). Mutually exclusive with \`engines\`.` },
+      engines: { type: 'array', items: { type: 'string' }, description: `Ordered engine priority list (${WEB_SEARCH_ENGINE_NAMES}). Mutually exclusive with \`engine\`.` },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          content: { type: 'string' },
+          sources: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                url: { type: 'string', required: true },
+                title: { type: 'string' },
+                snippet: { type: 'string' },
+                publishedAt: { type: 'string' },
+              },
+            },
+          },
+          truncated: { type: 'boolean', required: true },
+        },
+      },
+      render: (_args, value) => [{ type: 'text', text: formatSearchOutput(value) }],
+      presentationMeta: (_args, value) => searchMetaFromValue(value),
+    },
+    timeoutMs: 30000,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const query = String(args?.query ?? '').trim()
+      if (!query) throw new Error('query must be a non-empty string')
+      const request = { query, maxResults: 8 } // same source cap as the official tool
+      if (typeof args?.engine === 'string' && args.engine.trim().length > 0) request.engine = args.engine
+      else if (Array.isArray(args?.engines) && args.engines.length > 0) request.engines = args.engines
+      const result = await ctx.web.search(request, exec.signal)
+      return {
+        ...(result.content !== undefined ? { content: result.content } : {}),
+        sources: result.sources.map(projectSource),
+        truncated: result.truncated,
+      }
+    },
+    presentCall: (args) => ({ card: 'generic', title: args.query, kind: 'search', rawInput: args.query }),
+    presentResult,
+  })
+}
+
 // ── cordis plugin ───────────────────────────────────────────────────────────
 
 export default {
@@ -1108,5 +1301,6 @@ export default {
         disposeFetch()
       }
     })
+    registerEngineSearchTool(ctx, cfg)
   },
 }

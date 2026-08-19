@@ -111,6 +111,18 @@ config:
 
 被墙的引擎不会让整个搜索失败（前提是还有其他引擎）；单引擎模式下会快速失败并给出 "cooling down" 原因，而不是反复冲击被墙端点。
 
+## 模型指定引擎
+
+模型可以在每次搜索时指定用哪个引擎，两种途径：
+
+1. **工具**——在官方 `web_search` 之外，本插件注册了 `web_search_engine`，带两个可选参数：
+   - `engine`：单个引擎——`searxng`、`google`、`duckduckgo`、`mojeek`、`bing`、`baidu`、`sogou`、`360`
+   - `engines`：有序的引擎优先级列表
+   两者都不传时，调用降级为配置的默认链（全球优先、大陆兜底），与 `web_search` 完全一致。
+2. **provider 请求**——任何直接调用 `ctx.web.search({ query, engine })` 或 `ctx.web.search({ query, engines })` 的调用方都获得同样的覆盖；未知引擎名会抛 `WEB_PROVIDER_ERROR` 并列出合法 id。
+
+显式覆盖会**完全替换**配置的引擎链（包括 SearXNG 自动前置）——模型的明确选择优先。节奏控制、熔断和 `skipWithoutProxy` 对指定引擎同样生效，所以指定了但不可达的引擎会快速失败，而不会拖垮整个搜索。
+
 ## 回退到 DeepSeek 搜索
 
 从 `cordis.patch.yml` 中移除 `web` 覆盖项、`web-search-deepseek` 禁用项以及插入的那一行即可。
