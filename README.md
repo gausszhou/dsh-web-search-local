@@ -17,7 +17,7 @@ This package registers two providers that do the HTTP themselves:
 
 | provider id | capability | engines |
 | --- | --- | --- |
-| `local-multi` | `web_search` | SearXNG (optional, runs first when configured) → Bing → Baidu → Sogou → 360; DuckDuckGo & Mojeek remain available for proxy-enabled networks; the first engine with results wins |
+| `local-multi` | `web_search` | SearXNG (when configured) → Google → DuckDuckGo → Mojeek → Bing → Baidu → Sogou → 360; global engines need a proxy in CN and fall through to the directly reachable ones; the first engine with results wins |
 | `local-fetch` | `web_fetch` | direct GET, charset-aware decoding (incl. gbk), html/text bodies |
 
 ## Proxy / VPN support
@@ -55,7 +55,7 @@ Then add to your profile's `cordis.patch.yml` (`$DSH_HOME/profiles/web/cordis.pa
     - id: web-search-local
       name: '@gausszhou/dsh-web-search-local'
       config:
-        engines: [bing, baidu, sogou, 360]
+        engines: [searxng, google, duckduckgo, mojeek, bing, baidu, sogou, 360]
 ```
 
 ### From a local checkout / file path
@@ -75,7 +75,7 @@ Put this package anywhere the dsh process can read, e.g. `$DSH_HOME/profiles/web
     - id: web-search-local
       name: 'file:///C:/Users/<you>/.dsh/profiles/web/plugins/web-search-local/index.js'
       config:
-        engines: [bing, baidu, sogou, 360]
+        engines: [searxng, google, duckduckgo, mojeek, bing, baidu, sogou, 360]
 ```
 
 3. Restart dsh. `web_search` now returns plain source lists (no server-side summary) and works with any model.
@@ -84,7 +84,8 @@ Put this package anywhere the dsh process can read, e.g. `$DSH_HOME/profiles/web
 
 ```yaml
 config:
-  engines: [bing, baidu, sogou, 360]        # priority order (default = mainland-China friendly)
+  engines: [searxng, google, duckduckgo, mojeek, bing, baidu, sogou, 360]  # priority order (default = global-first, CN fallback)
+  skipWithoutProxy: [google, duckduckgo, mojeek] # engines NOT attempted when no proxy is available ([] = always attempt)
   searxngBaseUrl: 'http://127.0.0.1:8080'   # optional; runs first when set
   proxyUrl: ''                              # '' auto | 'off' | 'http://host:port'
   searchTimeoutMs: 12000
@@ -98,7 +99,7 @@ config:
   userAgent: '<browser-like UA>'
 ```
 
-The default engine list is tuned for **mainland-China networks**: Bing, Baidu, Sogou and 360 are reachable directly, with no VPN/proxy required. DuckDuckGo and Mojeek are blocked/unreliable there — if you have a proxy (`proxyUrl` or `HTTPS_PROXY`), add them back, e.g. `engines: [bing, baidu, duckduckgo]`.
+The default engine list is **global-first with a mainland-China fallback**: SearXNG (when configured), Google, DuckDuckGo and Mojeek are tried first — they need a proxy in CN networks and, when **no proxy is available, are skipped outright** (see `skipWithoutProxy`) instead of wasting a timeout each; with a proxy they run normally. The search then falls through to Bing, Baidu, Sogou and 360, which are reachable directly with no VPN/proxy required. `searxng` is auto-prepended when `searxngBaseUrl` is set, and the `google` engine is scrape-fragile (consent wall, `sorry/` bot detection, JS-required `enablejs` wall); for reliable Google results prefer a SearXNG instance with the google engine enabled. On open networks where the global engines work directly, set `skipWithoutProxy: []`.
 
 A private [SearXNG](https://docs.searxng.org/) instance (Docker: `docker run -p 8080:8080 searxng/searxng`) is the most robust engine of all: meta-search aggregation, a JSON API, no per-engine scraping.
 
@@ -119,6 +120,8 @@ Remove the `web` override, the `web-search-deepseek` disable, and the inserted r
 ## Notes
 
 - Engines are plain-HTML scraped with regex; markup changes upstream can break an engine — the chain simply falls through to the next one. Errors from every engine are aggregated into the thrown message. Sogou's masked `/link?url=` wrappers are resolved server-side (the stub page embeds the real target); 360's wrappers expose the real URL in the anchor's `data-mdurl` attribute, which the parser reads directly.
+- The `google` engine (opt-in, not in the default list) scrapes the HTML SERP with a dual-layout parser (basic `gbv=1` markup and the modern JS-era markup) and sends a CONSENT/SOCS cookie to bypass the EU consent interstitial. Google often serves scripts a JS-required wall (`/httpservice/retry/enablejs`) or a `sorry/` captcha instead of results — both are detected and trip the long circuit-breaker cooldown with a clear reason, and the chain falls through to the next engine. For reliable Google results, use a SearXNG instance with the google engine enabled.
+- Result shape matches the official provider: `web_search` returns `{ sources: [{ url, title?, snippet?, publishedAt? }], truncated }` — and it is **first-wins, not merged**: engines are tried in priority order and the first engine with a non-empty result list wins, deduped and capped at `maxSources`; engines that error or return nothing simply fall through to the next. `publishedAt` is a best-effort `YYYY-MM-DD` filled when the engine renders a date (SearXNG's `publishedDate`, or date text in Bing/Baidu/Sogou/360 result blocks) and omitted otherwise — the same optional semantics as the official provider's `page_age` field.
 - No third-party runtime dependencies: `fetch` + `node:http/https/net/tls` only, plus the dsh-provided `@deepseek-ai/dsh-web` (declared as a `peerDependency`; every dsh profile already ships it).
 - Errors follow the seam's provider contract: failures throw `WebError` with `WEB_PROVIDER_ERROR` (engine/transport/timeout, engine errors aggregated) or `WEB_ABORTED` (caller cancellation) — the same vocabulary the official providers use.
 - `web_fetch` needs `tool-web`'s `fetch: true`; the shipped `standard` agent preset ships with `fetch: false` — copy the preset to `$DSH_HOME/.agent-presets/` and flip it there.

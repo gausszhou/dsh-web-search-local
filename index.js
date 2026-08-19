@@ -2,10 +2,17 @@
  * dsh-web-search-local — keyless multi-engine web search + page fetch providers.
  *
  * Registers two providers into the `ctx.web` seam:
- *   - search provider id "local-multi": tries engines in order (SearXNG JSON
- *     when configured, then bing → baidu → sogou → 360) and returns the first
- *     engine that yields results. No API key, no DeepSeek involvement.
- *     DuckDuckGo and Mojeek remain available for proxy-enabled networks.
+ *   - search provider id "local-multi": tries engines in priority order —
+ *     searxng (when configured) → google → duckduckgo → mojeek → bing →
+ *     baidu → sogou → 360 — and returns the first engine that yields results,
+ *     first-wins, never merged. No API key, no DeepSeek involvement. The
+ *     global engines need a proxy in CN and are skipped outright when none is
+ *     available (see `skipWithoutProxy`), falling through to the directly
+ *     reachable ones (Google is scrape-fragile — prefer a SearXNG instance
+ *     with the google engine for reliable Google results).
+ *     Sources carry url/title/snippet and, when the engine renders a date,
+ *     publishedAt (normalized YYYY-MM-DD) — the same optional field the
+ *     official provider fills from its page_age metadata.
  *   - fetch provider id "local-fetch": GETs one http(s) URL, decodes the body
  *     (charset-aware, incl. gbk), returns html/text bodies for web_fetch.
  *
@@ -52,17 +59,24 @@ const PROXY_PROBE_PORTS = [7890, 7897, 10809, 10808, 1080, 8888, 8118, 8080, 208
 
 export function defaultConfig() {
   return {
-    // Engine order = priority. "searxng" is prepended automatically when
-    // searxngBaseUrl is set (a private SearXNG instance is the most robust
-    // engine of all: meta-search + JSON API + no per-engine scraping).
-    // Default is tuned for mainland-China networks: Bing/Baidu/Sogou/360 are
-    // reachable directly, while DuckDuckGo/Mojeek need a proxy — add them back
-    // to the list (e.g. [bing, baidu, duckduckgo]) when a proxy is configured.
-    engines: ['bing', 'baidu', 'sogou', '360'],
+    // Engine order = priority. The default is global-first with a
+    // mainland-China fallback: SearXNG (when configured), Google, DuckDuckGo
+    // and Mojeek need a proxy in CN and simply fall through to the directly
+    // reachable Bing/Baidu/Sogou/360 when unreachable — first-wins means one
+    // failed engine never breaks the search. "searxng" is additionally
+    // auto-prepended by engineList when searxngBaseUrl is set (deduped against
+    // this list); Google is scrape-fragile, so prefer a SearXNG instance with
+    // the google engine enabled for reliable Google results.
+    engines: ['searxng', 'google', 'duckduckgo', 'mojeek', 'bing', 'baidu', 'sogou', '360'],
     searxngBaseUrl: '',
     // '' = auto (env vars, then probe of common local proxy ports),
     // 'off' = direct connections only, 'http://host:port' = explicit proxy.
     proxyUrl: '',
+    // Engines skipped — not even attempted — when no proxy is available.
+    // They are unreachable/walled without one in CN-like networks, and
+    // attempting them would each waste a searchTimeoutMs on a connect timeout.
+    // Set to [] on open networks where they work directly.
+    skipWithoutProxy: ['google', 'duckduckgo', 'mojeek'],
     searchTimeoutMs: 12000,
     fetchTimeoutMs: 20000,
     maxFetchBytes: 1048576,
@@ -102,6 +116,7 @@ function utf8(buf) {
  *   prefix such as "a1") in the `u` query parameter; extract it with a regex
  *   because URLSearchParams would corrupt '+' as a space.
  * - DuckDuckGo /l/?uddg= links (absolute or relative).
+ * - Google /url?q= redirect links (relative or absolute).
  */
 function unwrapUrl(url) {
   if (/bing\.com\/ck\/a/i.test(url)) {
@@ -118,6 +133,13 @@ function unwrapUrl(url) {
           } catch { /* try next */ }
         }
       }
+    } catch { /* keep raw */ }
+  }
+  if (/^\/url\?q=/i.test(url) || /google\.[^/]+\/url\?/i.test(url)) {
+    try {
+      const u = new URL(url, 'https://www.google.com')
+      const target = u.searchParams.get('q')
+      if (target && /^https?:\/\//i.test(target)) return decodeURIComponent(target)
     } catch { /* keep raw */ }
   }
   if (url.startsWith('/')) url = `https://duckduckgo.com${url}`
@@ -158,6 +180,58 @@ function cleanText(input, max) {
 
 function safeCodePoint(code) {
   try { return String.fromCodePoint(code) } catch { return '' }
+}
+
+// ── published-date extraction ────────────────────────────────────────────────
+// The official DeepSeek provider carries `page_age` from the server-side tool;
+// scraped engines have no such metadata, so we look for a date in each result
+// block's raw markup. Bing/Baidu/Sogou/360 render one for many results (date
+// spans, attribution lines), SearXNG's JSON API provides `publishedDate`.
+// Extracted dates are normalized to `YYYY-MM-DD`; when nothing recognizable is
+// present the `publishedAt` field is omitted — exactly like the official
+// provider omits it when `page_age` is empty.
+
+const MONTH_NAMES = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12,
+}
+
+/**
+ * Best-effort date extraction → normalized `YYYY-MM-DD` ('' when absent).
+ * Supports Chinese (2024年5月12日), ISO/numeric (2024-05-12, 2024/5/2,
+ * 2024.5.12, ISO timestamps) and English (May 12, 2024 / 12 May 2024) formats.
+ */
+export function parseDate(text) {
+  const s = String(text ?? '')
+  const pad = (n) => String(n).padStart(2, '0')
+  let m
+  if ((m = /(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/.exec(s))) {
+    return `${m[1]}-${pad(m[2])}-${pad(m[3])}`
+  }
+  if ((m = /(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(s))) {
+    return `${m[1]}-${pad(m[2])}-${pad(m[3])}`
+  }
+  if ((m = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b/i.exec(s))) {
+    return `${m[3]}-${pad(MONTH_NAMES[m[1].toLowerCase()])}-${pad(m[2])}`
+  }
+  if ((m = /\b(\d{1,2})(?:st|nd|rd|th)?\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+(\d{4})\b/i.exec(s))) {
+    return `${m[3]}-${pad(MONTH_NAMES[m[2].toLowerCase()])}-${pad(m[1])}`
+  }
+  return ''
+}
+
+/**
+ * Assemble one source in the official provider's shape:
+ * `{ url, title?, snippet?, publishedAt? }` — every absent optional field is
+ * omitted, so the object is byte-compatible with `dsh-tool-web`'s projection.
+ */
+function makeSource(url, title, snippet, publishedAt) {
+  return {
+    url,
+    ...(title ? { title } : {}),
+    ...(snippet ? { snippet } : {}),
+    ...(publishedAt ? { publishedAt } : {}),
+  }
 }
 
 function dedupe(sources) {
@@ -268,18 +342,18 @@ function probePort(port) {
  * fails at transport level, falls back to a direct fetch. `direct: true`
  * forces a direct connection (used for engines that must not be proxied).
  */
-async function request(url, { cfg, signal, timeoutMs, maxBytes, accept, direct = false }) {
+async function request(url, { cfg, signal, timeoutMs, maxBytes, accept, direct = false, headers }) {
   const proxy = direct ? '' : await resolveProxy(cfg)
-  if (!proxy) return directRequest(url, { cfg, signal, timeoutMs, maxBytes, accept })
+  if (!proxy) return directRequest(url, { cfg, signal, timeoutMs, maxBytes, accept, headers })
   try {
-    return await proxyRequest(url, proxy, { cfg, signal, timeoutMs, maxBytes, accept })
+    return await proxyRequest(url, proxy, { cfg, signal, timeoutMs, maxBytes, accept, headers })
   } catch (error) {
     if (signal?.aborted) throw error
-    return directRequest(url, { cfg, signal, timeoutMs, maxBytes, accept })
+    return directRequest(url, { cfg, signal, timeoutMs, maxBytes, accept, headers })
   }
 }
 
-async function directRequest(url, { cfg, signal, timeoutMs, maxBytes, accept }) {
+async function directRequest(url, { cfg, signal, timeoutMs, maxBytes, accept, headers }) {
   const ac = combineTimeout(signal, timeoutMs)
   let res
   try {
@@ -288,6 +362,7 @@ async function directRequest(url, { cfg, signal, timeoutMs, maxBytes, accept }) 
         'user-agent': cfg.userAgent,
         accept: accept ?? 'text/html,application/xhtml+xml,*/*;q=0.8',
         'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        ...headers,
       },
       redirect: 'follow',
       signal: ac,
@@ -358,7 +433,7 @@ async function readBytes(res, maxBytes) {
  * HTTP GET through an HTTP proxy: CONNECT tunnel for https, absolute-form for
  * http, following up to 5 redirects (which may switch protocol).
  */
-function proxyRequest(startUrl, proxyUrl, { cfg, signal, timeoutMs, maxBytes, accept }) {
+function proxyRequest(startUrl, proxyUrl, { cfg, signal, timeoutMs, maxBytes, accept, headers: extraHeaders }) {
   return new Promise((resolve, reject) => {
     const proxy = new URL(proxyUrl)
     let settled = false
@@ -391,6 +466,7 @@ function proxyRequest(startUrl, proxyUrl, { cfg, signal, timeoutMs, maxBytes, ac
       'user-agent': cfg.userAgent,
       accept: accept ?? 'text/html,application/xhtml+xml,*/*;q=0.8',
       'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      ...extraHeaders,
     }
     function run(url) {
       const target = new URL(url)
@@ -496,7 +572,7 @@ function sleep(ms, signal) {
 function isBlockError(error) {
   const msg = String(error?.message ?? error)
   return (
-    /blocked by (captcha|anomaly)|anomaly check|verification wall|botnet|cc=botnet/i.test(msg) ||
+    /blocked by (captcha|anomaly)|anomaly check|verification wall|consent wall|enablejs|botnet|cc=botnet/i.test(msg) ||
     /^HTTP (403|429)$/.test(msg)
   )
 }
@@ -527,8 +603,8 @@ function engineCoolingDown(name, cfg) {
   return left
 }
 
-async function engineText(url, cfg, signal, direct = false) {
-  const r = await request(url, { cfg, signal, timeoutMs: cfg.searchTimeoutMs, maxBytes: 2_000_000, direct })
+async function engineText(url, cfg, signal, direct = false, headers) {
+  const r = await request(url, { cfg, signal, timeoutMs: cfg.searchTimeoutMs, maxBytes: 2_000_000, direct, headers })
   if (r.status < 200 || r.status >= 300) throw new Error(`HTTP ${r.status}`)
   return utf8(r.body)
 }
@@ -550,7 +626,7 @@ async function bingSearch(query, cfg, signal) {
     if (!title) continue
     const p = /<p[^>]*>([\s\S]*?)<\/p>/i.exec(block[0])
     const snippet = p ? cleanText(p[1], 320) : ''
-    out.push({ url, title, ...(snippet ? { snippet } : {}) })
+    out.push(makeSource(url, title, snippet, parseDate(block[0])))
   }
   return out
 }
@@ -587,7 +663,7 @@ function parseDdgHtml(html) {
     const title = cleanText(m[2], 200)
     if (!title) return
     const snippet = snippets[i] ? cleanText(snippets[i][1], 320) : ''
-    out.push({ url, title, ...(snippet ? { snippet } : {}) })
+    out.push(makeSource(url, title, snippet, parseDate(snippets[i] ? snippets[i][1] : '')))
   })
   return out
 }
@@ -602,9 +678,118 @@ function parseDdgLite(html) {
     const title = cleanText(m[2], 200)
     if (!title) return
     const snippet = snippets[i] ? cleanText(snippets[i][1], 320) : ''
-    out.push({ url, title, ...(snippet ? { snippet } : {}) })
+    out.push(makeSource(url, title, snippet, parseDate(snippets[i] ? snippets[i][1] : '')))
   })
   return out
+}
+
+async function googleSearch(query, cfg, signal) {
+  // Google is opt-in (NOT in the default engine list): in mainland-China
+  // networks it needs a proxy, and direct scraping trips its bot detection
+  // easily — a private SearXNG instance with the google engine enabled is the
+  // robust way to get Google results. `hl=en&gl=us&pws=0` pins the US index,
+  // the CONSENT/SOCS cookie bypasses the EU consent interstitial, and `gbv=1`
+  // requests the basic-HTML layout (h3.r + span.st), which is far more
+  // scrape-friendly than the JS shell Google otherwise serves to scripts
+  // (the /httpservice/retry/enablejs wall).
+  const url = `https://www.google.com/search?q=${encodeURIComponent(query)}&num=${cfg.maxSources + 4}&hl=en&gl=us&pws=0&gbv=1&filter=0`
+  const headers = { cookie: 'CONSENT=YES+cb.20210328-17-p0.en+FX+410; SOCS=CAI' }
+  const html = await engineText(url, cfg, signal, false, headers)
+  if (isGoogleBlocked(html)) throw new Error('blocked by captcha (google)')
+  const sources = parseGoogleHtml(html)
+  if (sources.length === 0 && /enablejs|httpservice\/retry/i.test(String(html).slice(0, 20000))) {
+    throw new Error('google requires javascript (enablejs)')
+  }
+  return sources
+}
+
+/** True when Google served a bot wall (/sorry, recaptcha) or the consent page. */
+function isGoogleBlocked(html) {
+  const head = String(html).slice(0, 60000)
+  return (
+    /sorry\/index|unusual traffic|g-recaptcha|consent\.google\.com|Before you continue to Google/i.test(head) ||
+    /<title>[^<]*(?:captcha|consent|unusual traffic)[^<]*<\/title>/i.test(head)
+  )
+}
+
+/**
+ * Parse google.com/search result HTML. Google serves two layouts:
+ * - basic (`gbv=1`, h3.r + span.st) — results are `<li class="g">` blocks;
+ * - modern (JS-era, h3.LC20lb + div.VwiC3b) — result anchors carry the target
+ *   in `/url?q=` (unwrapped by `unwrapUrl`) or as a direct https href, with
+ *   the title inside an `<h3>`. Navigation links (related searches, accounts,
+ *   preferences) are dropped. Exported for tests.
+ */
+export function parseGoogleHtml(html) {
+  if (/<h3[^>]*class="[^"]*\br\b[^"]*"[^>]*>\s*<a/i.test(html)) return parseGoogleBasicHtml(html)
+  return parseGoogleModernHtml(html)
+}
+
+/** Basic (gbv=1) layout: `<li class="g"><h3 class="r"><a href>title</a></h3> … <span class="st">snippet</span>`. */
+function parseGoogleBasicHtml(html) {
+  const out = []
+  for (const m of matchAll(html, /<li[^>]*class="[^"]*\bg\b[^"]*"[^>]*>([\s\S]*?)<\/li>/gi)) {
+    const block = m[1]
+    const a = /<h3[^>]*class="[^"]*\br\b[^"]*"[^>]*>\s*<a\b([^>]*)>([\s\S]*?)<\/a>\s*<\/h3>/i.exec(block)
+    if (!a) continue
+    const href = /href="([^"]+)"/i.exec(a[1])
+    if (!href) continue
+    const raw = decodeHref(href[1])
+    if (/^\/(search|preferences|intl)\b/i.test(raw)) continue
+    const url = unwrapUrl(raw)
+    if (!/^https?:\/\//i.test(url)) continue
+    let parsed
+    try { parsed = new URL(url) } catch { continue }
+    if (/^(accounts|consent|myaccount|policies)\.google\./i.test(parsed.hostname)) continue
+    if (/(^|\.)google\./i.test(parsed.hostname) && /^\/(search|url|preferences)/i.test(parsed.pathname)) continue
+    const title = cleanText(a[2], 200)
+    if (!title) continue
+    const st = /<span[^>]*class="[^"]*\bst\b[^"]*"[^>]*>([\s\S]*?)<\/span>/i.exec(block)
+    const snippet = st ? cleanText(st[1], 320) : ''
+    out.push(makeSource(url, title, snippet, parseDate(block)))
+  }
+  return out
+}
+
+/** Modern layout: `<a href="…">…<h3…>title</h3>…</a>` + `VwiC3b`/`aCOpRe` snippets. */
+function parseGoogleModernHtml(html) {
+  const out = []
+  const anchors = matchAll(html, /<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)
+  anchors.forEach((m, i) => {
+    const raw = decodeHref(m[1])
+    // Google's own navigation links (related searches, preferences, intl
+    // pages) are never organic results; /url?q= redirects are results and are
+    // unwrapped below.
+    if (/^\/(search|preferences|intl)\b/i.test(raw)) return
+    const tm = /<h3[^>]*>([\s\S]*?)<\/h3>/i.exec(m[2])
+    if (!tm) return
+    const title = cleanText(tm[1], 200)
+    if (!title) return
+    const url = unwrapUrl(raw)
+    if (!/^https?:\/\//i.test(url)) return
+    let parsed
+    try { parsed = new URL(url) } catch { return }
+    if (/^(accounts|consent|myaccount|policies)\.google\./i.test(parsed.hostname)) return
+    if (/(^|\.)google\./i.test(parsed.hostname) && /^\/(search|url|preferences)/i.test(parsed.pathname)) return
+    const next = i + 1 < anchors.length ? anchors[i + 1].index : Math.min(m.index + 6000, html.length)
+    const win = html.slice(m.index, next)
+    out.push(makeSource(url, title, googleSnippet(win), parseDate(win)))
+  })
+  return out
+}
+
+function googleSnippet(win) {
+  const div = /<div[^>]*class="[^"]*\bVwiC3b\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i.exec(win)
+  if (div) {
+    const t = cleanText(div[1], 320)
+    if (t.length >= 4) return t
+  }
+  const span = /<span[^>]*class="[^"]*\baCOpRe\b[^"]*"[^>]*>([\s\S]*?)<\/span>/i.exec(win)
+  if (span) {
+    const t = cleanText(span[1], 320)
+    if (t.length >= 4) return t
+  }
+  return ''
 }
 
 async function mojeekSearch(query, cfg, signal) {
@@ -619,7 +804,7 @@ async function mojeekSearch(query, cfg, signal) {
     const title = cleanText(m[2], 200)
     if (!title) return
     const snippet = snippets[i] ? cleanText(snippets[i][1], 320) : ''
-    out.push({ url, title, ...(snippet ? { snippet } : {}) })
+    out.push(makeSource(url, title, snippet, parseDate(snippets[i] ? snippets[i][1] : '')))
   })
   return out
 }
@@ -652,7 +837,7 @@ async function baiduSearch(query, cfg, signal) {
       const after = cleanText(body.replace(/<h3[\s\S]*?<\/h3>/i, ' '), 320)
       if (after && after.length > 4 && !after.includes('{"')) snippet = after
     }
-    out.push({ url, title, ...(snippet ? { snippet } : {}) })
+    out.push(makeSource(url, title, snippet, parseDate(body)))
   }
   return out
 }
@@ -690,8 +875,9 @@ function parseSogouHtml(html) {
     const title = cleanText(a[2], 200)
     if (!title) return
     const next = i + 1 < titles.length ? titles[i + 1].index : Math.min(m.index + 5000, html.length)
-    const snippet = sogouSnippet(html.slice(m.index + m[0].length, next))
-    out.push({ url, title, ...(snippet ? { snippet } : {}) })
+    const win = html.slice(m.index + m[0].length, next)
+    const snippet = sogouSnippet(win)
+    out.push(makeSource(url, title, snippet, parseDate(win)))
   })
   return out
 }
@@ -749,7 +935,7 @@ function parseQihu360Html(html) {
     if (!title) continue
     const p = /<p[^>]*class="[^"]*res-desc[^"]*"[^>]*>([\s\S]*?)<\/p>/i.exec(block)
     const snippet = p ? cleanText(p[1], 320) : ''
-    out.push({ url, title, ...(snippet ? { snippet } : {}) })
+    out.push(makeSource(url, title, snippet, parseDate(block)))
   }
   return out
 }
@@ -772,13 +958,14 @@ async function searxngSearch(query, cfg, signal) {
     const title = cleanText(item.title, 200)
     if (!title) continue
     const snippet = cleanText(item.content, 320)
-    out.push({ url: item.url, title, ...(snippet ? { snippet } : {}) })
+    out.push(makeSource(item.url, title, snippet, parseDate(item.publishedDate)))
   }
   return out
 }
 
 const ENGINES = {
   bing: bingSearch,
+  google: googleSearch,
   duckduckgo: duckDuckGoSearch,
   mojeek: mojeekSearch,
   baidu: baiduSearch,
@@ -803,6 +990,12 @@ export async function runSearch(searchReq, cfg, cache, signal) {
   const query = String(searchReq?.query ?? '').trim()
   if (!query) throw new WebError('query must be a non-empty string', 'WEB_PROVIDER_ERROR')
   const engines = engineList(cfg)
+  // Engines that need a proxy (per skipWithoutProxy) are resolved once per
+  // search: with no proxy available they are skipped outright instead of
+  // burning a searchTimeoutMs each on a doomed connect attempt.
+  const skipWithoutProxy = new Set(cfg.skipWithoutProxy ?? [])
+  const needsProxy = engines.some((name) => skipWithoutProxy.has(name))
+  const proxy = needsProxy ? await resolveProxy(cfg) : ''
   const cacheKey = `${query}::${engines.join(',')}`
   if (cache) {
     const cached = cache.get(cacheKey)
@@ -814,6 +1007,10 @@ export async function runSearch(searchReq, cfg, cache, signal) {
     const cooling = engineCoolingDown(name, cfg)
     if (cooling > 0) {
       errors.push(`${name}: cooling down (${Math.ceil(cooling / 1000)}s)`)
+      continue
+    }
+    if (skipWithoutProxy.has(name) && !proxy) {
+      errors.push(`${name}: skipped (no proxy available)`)
       continue
     }
     await paceEngineCalls(cfg, signal)
