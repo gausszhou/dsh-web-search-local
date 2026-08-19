@@ -26,9 +26,9 @@ A node process does **not** use the OS/browser proxy. If engines like DuckDuckGo
 
 1. `proxyUrl` config (explicit, or `'off'` to force direct)
 2. `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` environment variables
-3. a probe of common local HTTP proxy ports (`7890` Clash, `7897`, `10809` v2rayN, `1080`, …)
+3. a probe of common local HTTP proxy ports (`7890` Clash, `7897`, `10809`/`10808` v2rayN, `1080`, …)
 
-Every request then goes through the proxy (CONNECT tunnel for https, absolute-form for http). If the tunnel dies at transport level, the request falls back to direct — so Bing/Baidu keep working even when the VPN is down.
+The proxy applies **only to the global engines** (`google`, `duckduckgo`, `mojeek`) — they are the ones that need a tunnel in CN-like networks. The **CN engines (`bing`, `baidu`, `sogou`, `360`) and a private SearXNG instance always connect directly** (CONNECT tunnel is only used for the global engines; if the tunnel dies at transport level those requests fall back to direct too). This split matters: proxying CN engines from a foreign exit IP triggers Baidu's verification wall, Sogou's antispider captcha, and 360's 302 redirects; and routing your own SearXNG instance through a VPN node can serve stale or empty result sets.
 
 ## Install
 

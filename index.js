@@ -25,12 +25,13 @@
  * plain fetch. This plugin resolves a proxy automatically:
  *   1. config `proxyUrl` (explicit, or 'off' to force direct)
  *   2. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY environment variables
- *   3. a probe of common local HTTP proxy ports (Clash 7890, v2rayN 10809, …)
- * When a proxy is active every request goes through it (CONNECT tunnel, with
- * redirect following), and a transport-level proxy failure falls back to
- * direct, so bing/baidu still work even if the tunnel is down. Baidu always
- * goes direct (it is a China service and flags foreign exit IPs with a
- * verification wall).
+ *   3. a probe of common local HTTP proxy ports (Clash 7890, v2rayN 10808, …)
+ * The proxy applies ONLY to the global engines (google, duckduckgo, mojeek) —
+ * the CN engines (bing, baidu, sogou, 360) and a private SearXNG instance
+ * always connect DIRECTLY: proxying them from a foreign exit IP triggers
+ * verification walls / captchas (baidu) or serves stale garbage (searxng),
+ * and a transport-level proxy failure falls back to direct, so bing/baidu
+ * keep working even if the tunnel is down.
  *
  * Error contract: failures are thrown as `WebError` from `@deepseek-ai/dsh-web`
  * with the official structured codes — `WEB_PROVIDER_ERROR` for engine /
@@ -623,7 +624,9 @@ async function engineText(url, cfg, signal, direct = false, headers) {
 
 async function bingSearch(query, cfg, signal) {
   const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=${cfg.maxSources + 4}&setlang=zh-CN`
-  const html = await engineText(url, cfg, signal)
+  // CN engine: always direct — a foreign exit IP gets the consent/interstitial
+  // wall or a stripped SERP, and cn.bing.com serves clean results directly.
+  const html = await engineText(url, cfg, signal, true)
   if (/captcha|challenge/i.test(html.slice(0, 20000))) throw new Error('blocked by captcha')
   const out = []
   for (const block of matchAll(html, /<li class="b_algo[^"]*"[\s\S]*?<\/li>/gi)) {
@@ -856,7 +859,8 @@ async function baiduSearch(query, cfg, signal) {
 
 async function sogouSearch(query, cfg, signal) {
   const url = `https://www.sogou.com/web?query=${encodeURIComponent(query)}`
-  const html = await engineText(url, cfg, signal)
+  // CN engine: always direct — proxying it triggers sogou's antispider captcha.
+  const html = await engineText(url, cfg, signal, true)
   if (/antispider|seccode|请输入验证码|安全验证|验证码/i.test(html.slice(0, 80000))) throw new Error('blocked by captcha')
   const out = parseSogouHtml(html)
   // Sogou masks most organic results behind /link?url= redirect wrappers whose
@@ -910,7 +914,8 @@ function sogouSnippet(win) {
 
 /** Resolve a sogou /link?url= wrapper to the real target ('' if it fails). */
 async function resolveSogouLink(url, cfg, signal) {
-  const r = await request(url, { cfg, signal, timeoutMs: 4000, maxBytes: 64 * 1024, accept: 'text/html,*/*;q=0.8' })
+  // Direct, matching sogou's own routing — the stub page is on sogou.com.
+  const r = await request(url, { cfg, signal, timeoutMs: 4000, maxBytes: 64 * 1024, accept: 'text/html,*/*;q=0.8', direct: true })
   if (r.status < 200 || r.status >= 300) return ''
   const body = utf8(r.body)
   const m = /location\.replace\("([^"]+)"\)|content=["']0;URL=['"]?([^'">]+)/i.exec(body)
@@ -922,7 +927,8 @@ const QIHU_INTERNAL = /(^|\.)(so\.com|360\.cn|360kan\.com|qihoo\.com)$/i
 
 async function qihu360Search(query, cfg, signal) {
   const url = `https://www.so.com/s?q=${encodeURIComponent(query)}`
-  const html = await engineText(url, cfg, signal)
+  // CN engine: always direct — foreign exit IPs get 302'd away by 360.
+  const html = await engineText(url, cfg, signal, true)
   if (/captcha\.qihoo\.com|antispider|验证码/i.test(html.slice(0, 80000))) throw new Error('blocked by captcha')
   return parseQihu360Html(html)
 }
@@ -956,7 +962,10 @@ async function searxngSearch(query, cfg, signal) {
   const base = String(cfg.searxngBaseUrl || '').replace(/\/+$/, '')
   if (!base) return []
   const url = `${base}/search?q=${encodeURIComponent(query)}&format=json`
-  const r = await request(url, { cfg, signal, timeoutMs: cfg.searchTimeoutMs, maxBytes: 2_000_000, accept: 'application/json,*/*;q=0.8' })
+  // A private SearXNG instance is the operator's own server: always reach it
+  // directly. Routing it through a local VPN/proxy node can serve stale or
+  // empty result sets (and defeats the whole point of a private aggregator).
+  const r = await request(url, { cfg, signal, timeoutMs: cfg.searchTimeoutMs, maxBytes: 2_000_000, accept: 'application/json,*/*;q=0.8', direct: true })
   if (r.status < 200 || r.status >= 300) throw new Error(`HTTP ${r.status}`)
   let data
   try {
