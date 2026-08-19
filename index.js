@@ -2,14 +2,14 @@
  * dsh-web-search-local — keyless multi-engine web search + page fetch providers.
  *
  * Registers two providers into the `ctx.web` seam:
- *   - search provider id "local-multi": tries engines in priority order —
- *     searxng (when configured) → google → duckduckgo → mojeek → bing →
- *     baidu → sogou → 360 — and returns the first engine that yields results,
- *     first-wins, never merged. No API key, no DeepSeek involvement. The
- *     global engines need a proxy in CN and are skipped outright when none is
- *     available (see `skipWithoutProxy`), falling through to the directly
- *     reachable ones (Google is scrape-fragile — prefer a SearXNG instance
- *     with the google engine for reliable Google results).
+ *   - search provider id "local-multi": runs three layers in order —
+ *     searxng (when configured) → global (google, duckduckgo, mojeek) → cn
+ *     (bing, baidu, sogou, 360) — with same-layer engines queried in PARALLEL
+ *     and their results merged round-robin (deduped, capped at maxSources).
+ *     A layer with no results degrades to the next, so the global engines
+ *     (proxy-gated in CN, Google scrape-fragile — prefer a SearXNG instance
+ *     with the google engine for reliable Google results) never break the
+ *     directly reachable cn engines. No API key, no DeepSeek involvement.
  *     Sources carry url/title/snippet and, when the engine renders a date,
  *     publishedAt (normalized YYYY-MM-DD) — the same optional field the
  *     official provider fills from its page_age metadata.
@@ -238,18 +238,22 @@ function makeSource(url, title, snippet, publishedAt) {
   }
 }
 
+/** Dedupe key for one source: the URL minus hash and trailing slashes. */
+function sourceKey(source) {
+  try {
+    const u = new URL(source.url)
+    u.hash = ''
+    return u.href.replace(/\/+$/, '')
+  } catch {
+    return source.url
+  }
+}
+
 function dedupe(sources) {
   const seen = new Set()
   const out = []
   for (const source of sources) {
-    let key
-    try {
-      const u = new URL(source.url)
-      u.hash = ''
-      key = u.href.replace(/\/+$/, '')
-    } catch {
-      key = source.url
-    }
+    const key = sourceKey(source)
     if (seen.has(key)) continue
     seen.add(key)
     out.push(source)
@@ -555,14 +559,16 @@ function proxyRequest(startUrl, proxyUrl, { cfg, signal, timeoutMs, maxBytes, ac
 // ── engines ─────────────────────────────────────────────────────────────────
 
 // ── engine pacing & circuit breaking ─────────────────────────────────────────
-// Engine calls are serialized with a global minimum interval (anti rate-limit),
-// and a failing engine is skipped for a cooldown: long for bot-wall blocks
-// (captcha / anomaly / verification wall), short for generic failures. This is
+// Same-layer engines are queried in parallel, so pacing is per engine: the
+// same engine is never called twice within `engineMinIntervalMs` (anti
+// rate-limit), while different engines in one layer start together. A failing
+// engine is skipped for a cooldown: long for bot-wall blocks (captcha /
+// anomaly / verification wall / enablejs), short for generic failures. This is
 // module-level because the cache is per-plugin-instance while pacing must be
 // process-wide to actually protect the engines.
 
 const engineCooldowns = new Map() // engine name -> ms timestamp until which it is skipped
-let lastEngineRequestAt = 0        // last engine call start, for the global min interval
+const engineLastAt = new Map()    // engine name -> last call start, for the per-engine min interval
 
 function sleep(ms, signal) {
   if (ms <= 0) return Promise.resolve()
@@ -581,12 +587,14 @@ function isBlockError(error) {
   )
 }
 
-/** Serialize engine calls: wait until the global minimum interval is satisfied. */
-async function paceEngineCalls(cfg, signal) {
-  if (!cfg.engineMinIntervalMs) return
-  const wait = lastEngineRequestAt + cfg.engineMinIntervalMs - Date.now()
+/** Wait until `engineMinIntervalMs` has passed since this engine's last call. */
+async function paceEngine(name, cfg, signal) {
+  const min = cfg.engineMinIntervalMs
+  if (!min) return
+  const last = engineLastAt.get(name) ?? 0
+  const wait = last + min - Date.now()
   if (wait > 0) await sleep(wait, signal)
-  lastEngineRequestAt = Date.now()
+  engineLastAt.set(name, Date.now())
 }
 
 /** Negative-cache an engine failure so later searches skip it during the cooldown. */
@@ -988,6 +996,60 @@ function engineList(cfg) {
   return list
 }
 
+// ── layered execution ────────────────────────────────────────────────────────
+// Search runs in three layers, in order, with same-layer engines queried in
+// PARALLEL and their results merged (round-robin, deduped, capped):
+//   1. searxng — a private SearXNG instance is already a meta-search
+//      aggregation, so its results win immediately and lower layers are skipped
+//   2. global — google / duckduckgo / mojeek (proxy-gated in CN networks)
+//   3. cn — bing / baidu / sogou / 360 (directly reachable)
+// A layer with no results (empty, blocked, or skipped engines) degrades to the
+// next layer; only when every layer fails is the aggregated error thrown.
+
+const ENGINE_LAYERS = {
+  searxng: ['searxng'],
+  global: ['google', 'duckduckgo', 'mojeek'],
+  cn: ['bing', 'baidu', 'sogou', '360'],
+}
+const LAYER_ORDER = ['searxng', 'global', 'cn']
+
+/** Project an engine list onto the layered plan; empty layers are dropped. */
+function layerList(engines) {
+  const out = []
+  for (const layer of LAYER_ORDER) {
+    const members = ENGINE_LAYERS[layer].filter((name) => engines.includes(name))
+    if (members.length > 0) out.push({ name: layer, engines: members })
+  }
+  return out
+}
+
+/**
+ * Merge one layer's engine results: dedupe each engine's list, then take
+ * sources round-robin across engines (engine 1 #1, engine 2 #1, engine 1 #2, …)
+ * so no engine's ranking dominates. Capped at `maxSources`; `truncated` is true
+ * when the merged list had more sources than the cap. Exported for tests.
+ */
+export function mergeRoundRobin(results, maxSources) {
+  const lists = []
+  for (const r of results) {
+    const deduped = dedupe(r.sources)
+    if (deduped.length > 0) lists.push(deduped)
+  }
+  const seen = new Set()
+  const all = []
+  const maxLen = Math.max(0, ...lists.map((l) => l.length))
+  for (let i = 0; i < maxLen; i++) {
+    for (const list of lists) {
+      if (i >= list.length) continue
+      const key = sourceKey(list[i])
+      if (seen.has(key)) continue
+      seen.add(key)
+      all.push(list[i])
+    }
+  }
+  return { sources: all.slice(0, maxSources), truncated: all.length > maxSources }
+}
+
 // ── provider implementations ────────────────────────────────────────────────
 
 /**
@@ -1014,10 +1076,34 @@ function requestedEngines(searchReq) {
   return list
 }
 
+/**
+ * Run one engine call with pacing, circuit breaking, and the no-proxy skip
+ * applied. Resolves `{ ok: true, name, sources }`, or `{ ok: false, name,
+ * error }` (a skip/cooling reason string or an engine failure). Caller
+ * cancellation throws `WEB_ABORTED` through, never an aggregate.
+ */
+async function runOneEngine(name, query, cfg, signal, skipWithoutProxy, proxy) {
+  if (signal?.aborted) throw new WebError('search aborted', 'WEB_ABORTED', { cause: signal.reason })
+  const cooling = engineCoolingDown(name, cfg)
+  if (cooling > 0) return { ok: false, name, error: `${name}: cooling down (${Math.ceil(cooling / 1000)}s)` }
+  if (skipWithoutProxy.has(name) && !proxy) return { ok: false, name, error: `${name}: skipped (no proxy available)` }
+  await paceEngine(name, cfg, signal)
+  if (signal?.aborted) throw new WebError('search aborted', 'WEB_ABORTED', { cause: signal.reason })
+  try {
+    const sources = await ENGINES[name](query, cfg, signal)
+    return { ok: true, name, sources }
+  } catch (error) {
+    if (signal?.aborted) throw new WebError('search aborted', 'WEB_ABORTED', { cause: error })
+    noteEngineFailure(name, error, cfg)
+    return { ok: false, name, error: `${name}: ${error?.message ?? error}` }
+  }
+}
+
 export async function runSearch(searchReq, cfg, cache, signal) {
   const query = String(searchReq?.query ?? '').trim()
   if (!query) throw new WebError('query must be a non-empty string', 'WEB_PROVIDER_ERROR')
   const engines = requestedEngines(searchReq) ?? engineList(cfg)
+  const layers = layerList(engines)
   // Engines that need a proxy (per skipWithoutProxy) are resolved once per
   // search: with no proxy available they are skipped outright instead of
   // burning a searchTimeoutMs each on a doomed connect attempt.
@@ -1030,30 +1116,28 @@ export async function runSearch(searchReq, cfg, cache, signal) {
     if (cached) return copyResult(cached)
   }
   const errors = []
-  for (const name of engines) {
+  for (const layer of layers) {
     if (signal?.aborted) throw new WebError('search aborted', 'WEB_ABORTED', { cause: signal.reason })
-    const cooling = engineCoolingDown(name, cfg)
-    if (cooling > 0) {
-      errors.push(`${name}: cooling down (${Math.ceil(cooling / 1000)}s)`)
-      continue
-    }
-    if (skipWithoutProxy.has(name) && !proxy) {
-      errors.push(`${name}: skipped (no proxy available)`)
-      continue
-    }
-    await paceEngineCalls(cfg, signal)
-    if (signal?.aborted) throw new WebError('search aborted', 'WEB_ABORTED', { cause: signal.reason })
-    try {
-      const sources = await ENGINES[name](query, cfg, signal)
-      if (sources.length > 0) {
-        const result = { sources: dedupe(sources).slice(0, cfg.maxSources), truncated: false }
-        if (cache) cache.set(cacheKey, result)
-        return copyResult(result)
+    const settled = await Promise.allSettled(
+      layer.engines.map((name) => runOneEngine(name, query, cfg, signal, skipWithoutProxy, proxy)),
+    )
+    const aborted = settled.find((s) => s.status === 'rejected' && s.reason?.code === 'WEB_ABORTED')
+    if (aborted) throw aborted.reason
+    for (const s of settled) {
+      if (s.status === 'fulfilled') {
+        if (!s.value.ok) errors.push(s.value.error)
+      } else {
+        errors.push(String(s.reason?.message ?? s.reason))
       }
-    } catch (error) {
-      if (signal?.aborted) throw new WebError('search aborted', 'WEB_ABORTED', { cause: error })
-      noteEngineFailure(name, error, cfg)
-      errors.push(`${name}: ${error?.message ?? error}`)
+    }
+    const merged = mergeRoundRobin(
+      settled.filter((s) => s.status === 'fulfilled' && s.value.ok).map((s) => s.value),
+      cfg.maxSources,
+    )
+    if (merged.sources.length > 0) {
+      const result = { sources: merged.sources, truncated: merged.truncated }
+      if (cache) cache.set(cacheKey, result)
+      return copyResult(result)
     }
   }
   if (errors.length > 0) throw new WebError(`all search engines failed (${errors.join('; ')})`, 'WEB_PROVIDER_ERROR')

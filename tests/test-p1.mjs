@@ -8,7 +8,7 @@
 // let expired cooldowns drop — and the searxng publishedAt scenario runs
 // BEFORE the 429 long-cooldown one so it cannot inherit that cooldown.
 import { createServer } from 'node:http'
-import { runSearch, defaultConfig, parseDate, parseGoogleHtml } from '../index.js'
+import { runSearch, defaultConfig, parseDate, parseGoogleHtml, mergeRoundRobin } from '../index.js'
 
 const results = []
 function check(name, ok, detail = '') {
@@ -140,7 +140,56 @@ const listen = (server) => new Promise((r) => server.listen(0, '127.0.0.1', r))
   }
 }
 
-// ── 7. Block errors (HTTP 429) trip the LONG cooldown ───────────────────────
+// ── 7. mergeRoundRobin: round-robin merge, cross-engine dedupe, cap ─────────
+{
+  const a = [
+    { url: 'https://e.com/1', title: 'a1' },
+    { url: 'https://e.com/2', title: 'a2' },
+    { url: 'https://e.com/3', title: 'a3' },
+  ]
+  const b = [
+    { url: 'https://e.com/1', title: 'dup of a1' },
+    { url: 'https://e.com/4', title: 'b2' },
+  ]
+  const { sources, truncated } = mergeRoundRobin([{ sources: a }, { sources: b }], 10)
+  const urls = sources.map((s) => s.url)
+  // round-robin: a#1, b#1 (dup → skipped), a#2, b#2, a#3 → 1, 2, 4, 3
+  check('mergeRoundRobin round-robin + dedupe', urls.join(',') === 'https://e.com/1,https://e.com/2,https://e.com/4,https://e.com/3' && truncated === false, JSON.stringify(urls))
+  const big = mergeRoundRobin([{ sources: Array.from({ length: 10 }, (_, i) => ({ url: `https://e.com/${i}` })) }], 3)
+  check('mergeRoundRobin cap + truncated', big.sources.length === 3 && big.truncated === true, JSON.stringify(big))
+}
+
+// ── 8. Layered degradation: searxng layer empty → global layer (skipped) ────
+// Runs before the 429/cooldown scenario (searxng is referenced here).
+{
+  const cfg = { ...defaultConfig(), engines: ['searxng', 'google'], proxyUrl: 'off', engineMinIntervalMs: 0 }
+  try {
+    await runSearch({ query: 'x' }, cfg, null)
+    check('layered degradation', false, 'did not throw')
+  } catch (e) {
+    check('layered degradation', /skipped \(no proxy available\)/.test(e.message), e.message.slice(0, 120))
+  }
+}
+
+// ── 9. searxng layer short-circuits lower layers ────────────────────────────
+// Runs before the 429/cooldown scenario (searxng is referenced here).
+{
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ results: [{ url: 'https://searxng.example.com/top', title: 'From searxng', content: 'meta-search result' }] }))
+  })
+  await listen(server)
+  const port = server.address().port
+  // Config names google (global layer), but searxngBaseUrl prepends searxng:
+  // the searxng layer must win immediately, so google is never attempted.
+  const cfg = { ...defaultConfig(), searxngBaseUrl: `http://127.0.0.1:${port}`, engines: ['google'], proxyUrl: 'off', engineMinIntervalMs: 0 }
+  const r = await runSearch({ query: 'x' }, cfg, null)
+  server.close()
+  server.closeAllConnections?.()
+  check('searxng layer short-circuits', r.sources[0]?.url === 'https://searxng.example.com/top' && r.truncated === false, JSON.stringify(r.sources))
+}
+
+// ── 10. Block errors (HTTP 429) trip the LONG cooldown ──────────────────────
 {
   const server = createServer((req, res) => {
     res.writeHead(429, { 'content-type': 'text/plain' })
@@ -160,7 +209,7 @@ const listen = (server) => new Promise((r) => server.listen(0, '127.0.0.1', r))
   server.closeAllConnections?.()
 }
 
-// ── 8. google engine: parseGoogleHtml (modern layout, unit) ─────────────────
+// ── 11. google engine: parseGoogleHtml (modern layout, unit) ────────────────
 {
   const html = `<div id="search">
     <div class="g">
@@ -192,7 +241,7 @@ const listen = (server) => new Promise((r) => server.listen(0, '127.0.0.1', r))
   check('google parseGoogleHtml (modern)', ok, JSON.stringify(src))
 }
 
-// ── 9. google engine: parseGoogleHtml (basic gbv=1 layout, unit) ────────────
+// ── 12. google engine: parseGoogleHtml (basic gbv=1 layout, unit) ───────────
 {
   const html = `<ol id="rso">
     <li class="g">
@@ -222,7 +271,7 @@ const listen = (server) => new Promise((r) => server.listen(0, '127.0.0.1', r))
   check('google parseGoogleHtml (basic/gbv=1)', ok, JSON.stringify(src))
 }
 
-// ── 10. skipWithoutProxy: no proxy → google/ddg/mojeek skipped fast ─────────
+// ── 13. skipWithoutProxy: no proxy → google/ddg/mojeek skipped fast ─────────
 {
   const cfg = { ...defaultConfig(), engines: ['google', 'duckduckgo', 'mojeek'], proxyUrl: 'off', engineMinIntervalMs: 0 }
   const t0 = Date.now()
@@ -236,7 +285,7 @@ const listen = (server) => new Promise((r) => server.listen(0, '127.0.0.1', r))
   }
 }
 
-// ── 11. skipWithoutProxy: [] restores attempting the engines ────────────────
+// ── 14. skipWithoutProxy: [] restores attempting the engines ────────────────
 {
   const cfg = { ...defaultConfig(), engines: ['google'], proxyUrl: 'off', skipWithoutProxy: [], engineMinIntervalMs: 0, engineCooldownMs: 0, engineRetryCooldownMs: 0, searchTimeoutMs: 2500 }
   try {
