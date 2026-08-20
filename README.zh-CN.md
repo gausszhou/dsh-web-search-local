@@ -38,13 +38,18 @@ Node 进程**不会**自动使用操作系统/浏览器的代理。如果 DuckDu
 npm install @gausszhou/dsh-web-search-local
 ```
 
-或者用 dsh CLI 一步注册为插件：
+或者用 dsh CLI 一步注册并激活插件：
 
 ```bash
 dsh plugin add @gausszhou/dsh-web-search-local
 ```
 
-然后在你的 profile 的 `cordis.patch.yml`（web profile 即 `$DSH_HOME/profiles/web/cordis.patch.yml`）中切换 provider 并禁用内置的 DeepSeek provider：
+本包内置 `dsh.bundle` patch，因此 `dsh plugin add` 会安装并**自动激活**插件：
+web profile 会自动切换为 `searchProvider: local-multi` / `fetchProvider: local-fetch`，
+并禁用内置的 `web-search-deepseek` provider，无需手工编辑 `cordis.patch.yml`。
+
+如需**调整** bundle 应用的默认值，可在你的 profile 的 `cordis.patch.yml`
+（web profile 即 `$DSH_HOME/profiles/web/cordis.patch.yml`，位于 bundle 层之后）中覆盖：
 
 ```yaml
 - id: web

@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-08-20
+
+### Added
+
+- **Auto-activating dsh plugin bundle.** The package now ships a
+  `cordis.patch.yml` and declares `dsh.bundle.patch` pointing to it, so
+  `dsh plugin add @gausszhou/dsh-web-search-local` installs the patch as a
+  profile layer and activates the plugin automatically — no hand-editing of the
+  profile's `cordis.patch.yml` required. The bundle switches the web profile to
+  `searchProvider: local-multi` / `fetchProvider: local-fetch` and disables the
+  built-in `web-search-deepseek` provider, matching the documented install.
+- **`exports` map** exposing `./cordis.patch.yml` (and `./package.json`) in
+  addition to the package entry, matching dsh plugin conventions.
+
+### Changed
+
+- Peer dependency floors aligned with the dsh ecosystem:
+  `@deepseek-ai/dsh-settings` and `@deepseek-ai/dsh-web` are now
+  `^0.1.0-rc.7` (was `>=0.1.0-rc.0`).
+
 ## [Unreleased]
 
 ## [0.1.6] - 2026-08-20

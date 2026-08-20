@@ -40,13 +40,20 @@ The proxy applies **only to the global engines** (`google`, `duckduckgo`, `mojee
 npm install @gausszhou/dsh-web-search-local
 ```
 
-Or register it with the dsh CLI in one step:
+Or register and activate it with the dsh CLI in one step:
 
 ```bash
 dsh plugin add @gausszhou/dsh-web-search-local
 ```
 
-Then switch the profile's providers and disable the built-in DeepSeek provider in its `cordis.patch.yml` (`$DSH_HOME/profiles/web/cordis.patch.yml` for the web profile):
+The package ships a `dsh.bundle` patch, so `dsh plugin add` installs and
+**auto-activates** it: the web profile switches to `searchProvider: local-multi`
+/ `fetchProvider: local-fetch` and the built-in `web-search-deepseek` provider is
+disabled. No manual `cordis.patch.yml` edit is required.
+
+To **tune** the defaults the bundle applies, override them in your profile's
+`cordis.patch.yml` (`$DSH_HOME/profiles/web/cordis.patch.yml` for the web
+profile) after the bundle layer:
 
 ```yaml
 - id: web

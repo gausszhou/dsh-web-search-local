@@ -7,6 +7,24 @@
 
 ## [Unreleased]（未发布）
 
+## [0.2.0] - 2026-08-20
+
+### 新增
+
+- **可自动激活的 dsh 插件 bundle。** 本包现在内置 `cordis.patch.yml` 并声明
+  `dsh.bundle.patch` 指向它，因此 `dsh plugin add @gausszhou/dsh-web-search-local`
+  会把该 patch 作为 profile 层安装并**自动激活插件**，无需再手工编辑 profile 的
+  `cordis.patch.yml`。该 bundle 会把 web profile 切换为
+  `searchProvider: local-multi` / `fetchProvider: local-fetch`，并禁用内置的
+  `web-search-deepseek` provider，与文档所述安装方式一致。
+- **`exports` 映射**，除包入口外还暴露 `./cordis.patch.yml` 与 `./package.json`，
+  符合 dsh 插件约定。
+
+### 变更
+
+- 对齐 dsh 生态的 peer 依赖下限：`@deepseek-ai/dsh-settings` 与
+  `@deepseek-ai/dsh-web` 现为 `^0.1.0-rc.7`（原为 `>=0.1.0-rc.0`）。
+
 ## [0.1.6] - 2026-08-20
 
 ### 新增

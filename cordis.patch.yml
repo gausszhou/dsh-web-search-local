@@ -1,0 +1,19 @@
+# dsh bundle patch: activates this plugin as a profile layer.
+# When the package declares dsh.bundle.patch, `dsh plugin add` installs the
+# patch and inserts the plugin into the profile's layer stack, so web_search
+# uses the local providers (local-multi / local-fetch) instead of the built-in
+# DeepSeek provider. Override any of these entries in your own cordis.patch.yml.
+
+- id: web
+  config:
+    searchProvider: local-multi
+    fetchProvider: local-fetch
+
+- id: web-search-deepseek
+  disabled: true
+
+- insert:
+    - id: web-search-local
+      name: '@gausszhou/dsh-web-search-local'
+      config:
+        engines: [searxng, google, duckduckgo, mojeek, bing, baidu, sogou, 360]
