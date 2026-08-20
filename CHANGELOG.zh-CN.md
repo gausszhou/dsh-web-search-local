@@ -7,6 +7,19 @@
 
 ## [Unreleased]（未发布）
 
+## [0.1.6] - 2026-08-20
+
+### 新增
+
+- **接入 settings 服务。** 插件现在声明了一个 schemastery `Config` schema（字段与
+  `defaultConfig()` 一一对应），并通过 dsh 的 settings 服务注册了 `web-search-local`
+  设置命名空间——与内置的 `web-search-deepseek`、`shell`、`agent-loop` 插件相同的机制。
+  这使得配置可校验、规范化、可持久化，并让每个 provider 操作读取**实时生效**的配置段：
+  通过设置 UI 改动的值会在下一次搜索/抓取时立即生效，无需重启。`Config` 与
+  `SETTINGS_NAMESPACE` 作为具名导出对外提供。
+- 特性开关化的回退：在没有 settings 服务的 profile（或测试 mock）中会跳过接入，
+  直接采用组合配置，行为保持不变。
+
 ## [0.1.5] - 2026-08-20
 
 ### 修复
@@ -64,7 +77,8 @@
 - 首个版本：面向 dsh `ctx.web` 无缝集成的免密钥多引擎网页搜索 + 页面抓取
   Provider（无 DeepSeek 依赖），并支持自动代理解析。
 
-[Unreleased]: https://github.com/gausszhou/dsh-web-search-local/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/gausszhou/dsh-web-search-local/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/gausszhou/dsh-web-search-local/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/gausszhou/dsh-web-search-local/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/gausszhou/dsh-web-search-local/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/gausszhou/dsh-web-search-local/compare/v0.1.2...v0.1.3

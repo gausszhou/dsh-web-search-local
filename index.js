@@ -51,7 +51,9 @@ import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
 import tls from 'node:tls'
+import z from '@deepseek-ai/schemastery'
 import { WebError } from '@deepseek-ai/dsh-web'
+import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 
 export const SEARCH_PROVIDER_ID = 'local-multi'
 export const FETCH_PROVIDER_ID = 'local-fetch'
@@ -97,6 +99,49 @@ export function defaultConfig() {
     engineRetryCooldownMs: 60000,   // transport, HTTP error, or empty-result failures
     userAgent: DEFAULT_USER_AGENT,
   }
+}
+
+/**
+ * Settings namespace carrying this plugin's live config. Registering it through
+ * the DSH settings service makes the config persistable, validated, and
+ * editable in the desktop "Plugin configuration" surface (the same seam the
+ * built-in web-search-deepseek / shell / agent-loop plugins use). A profile
+ * without a settings service simply keeps the composition `config` — behavior
+ * is unchanged.
+ */
+export const SETTINGS_NAMESPACE = settingsNamespace('web-search-local')
+
+/**
+ * Schemastery config schema for this plugin. The field set mirrors
+ * `defaultConfig()`; assigning `defaultConfig()` as each field's `.default()`
+ * keeps a single source of truth. Declaring a schema is what lets the DSH
+ * settings service validate, normalize, and show this plugin's config.
+ */
+export const Config = z.object({
+  engines: z.array(z.string()).default(defaultConfig().engines),
+  searxngBaseUrl: z.string().default(defaultConfig().searxngBaseUrl),
+  proxyUrl: z.string().default(defaultConfig().proxyUrl),
+  skipWithoutProxy: z.array(z.string()).default(defaultConfig().skipWithoutProxy),
+  searchTimeoutMs: z.number().step(1).min(1).default(defaultConfig().searchTimeoutMs),
+  fetchTimeoutMs: z.number().step(1).min(1).default(defaultConfig().fetchTimeoutMs),
+  maxFetchBytes: z.number().step(1).min(1).default(defaultConfig().maxFetchBytes),
+  maxSources: z.number().step(1).min(1).default(defaultConfig().maxSources),
+  cacheTtlMs: z.number().step(1).min(0).default(defaultConfig().cacheTtlMs),
+  cacheMax: z.number().step(1).min(1).default(defaultConfig().cacheMax),
+  engineMinIntervalMs: z.number().step(1).min(0).default(defaultConfig().engineMinIntervalMs),
+  engineCooldownMs: z.number().step(1).min(0).default(defaultConfig().engineCooldownMs),
+  engineRetryCooldownMs: z.number().step(1).min(0).default(defaultConfig().engineRetryCooldownMs),
+  userAgent: z.string().default(defaultConfig().userAgent),
+})
+
+/**
+ * Resolve the config a provider operation reads, layering the live settings
+ * section over the composition entry over the hard defaults. Rebuilding from
+ * `defaultConfig()` each time guarantees the object is always complete even
+ * before a settings service mounts.
+ */
+function resolveConfig(section) {
+  return { ...defaultConfig(), ...(section ?? {}) }
 }
 
 // ── small helpers ───────────────────────────────────────────────────────────
@@ -1298,7 +1343,7 @@ function presentSearchResult(args, result) {
  * The model may pin one engine (`engine`) or an ordered list (`engines`);
  * omitting both degrades to the configured default chain.
  */
-function registerEngineSearchTool(ctx, cfg) {
+function registerEngineSearchTool(ctx) {
   let tools
   try { tools = ctx.get('tools') } catch { return }
   if (!tools || typeof tools.register !== 'function') return
@@ -1375,17 +1420,33 @@ export default {
   name: 'web-search-local',
   inject: ['web'],
   apply(ctx, config = {}) {
-    const cfg = { ...defaultConfig(), ...config }
-    const cache = makeCache(cfg)
+    // Live config source: defaults → composition config → settings section.
+    // Each provider operation snapshots `currentCfg()` so edits made through the
+    // settings UI apply to the next search/fetch without a reload. Settings
+    // wiring is best-effort: it only runs when the runtime exposes the settings
+    // seam (ctx.inject), otherwise the composition config is used as-is — which
+    // keeps the plugin loadable on contexts that omit settings entirely.
+    let currentCfg = () => resolveConfig(config)
+    if (typeof ctx.inject === 'function') {
+      installSettingsSection(ctx, SETTINGS_NAMESPACE, Config, config, {
+        setSource: (source) => {
+          currentCfg = () => resolveConfig(source())
+        },
+        onChange: () => {},
+      })
+    }
+    // Cache bounds (TTL / max) are read once at construction; the rarely-tuned
+    // cache tuning is pinned to the defaults so cache semantics stay stable.
+    const cache = makeCache(defaultConfig())
     const searchProvider = {
       id: SEARCH_PROVIDER_ID,
       available: () => true,
-      search: (request, signal) => runSearch(request, cfg, cache, signal),
+      search: (request, signal) => runSearch(request, currentCfg(), cache, signal),
     }
     const fetchProvider = {
       id: FETCH_PROVIDER_ID,
       available: () => true,
-      fetch: (request, signal) => fetchUrl(request, cfg, signal),
+      fetch: (request, signal) => fetchUrl(request, currentCfg(), signal),
     }
     ctx.effect(function* () {
       const disposeSearch = ctx.web.registerSearchProvider(searchProvider)
@@ -1395,6 +1456,6 @@ export default {
         disposeFetch()
       }
     })
-    registerEngineSearchTool(ctx, cfg)
+    registerEngineSearchTool(ctx)
   },
 }

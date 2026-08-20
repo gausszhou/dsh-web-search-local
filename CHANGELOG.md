@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-08-20
+
+### Added
+
+- **Settings-service integration.** The plugin now declares a schemastery
+  `Config` schema (one field per entry of `defaultConfig()`) and registers the
+  `web-search-local` settings namespace through dsh's settings service — the
+  same mechanism the built-in `web-search-deepseek`, `shell`, and `agent-loop`
+  plugins use. This makes the config validated, normalized, and persistable,
+  and lets each provider operation read the **live** config section so a value
+  changed through the settings UI takes effect on the next search/fetch with
+  no reload. `Config` and `SETTINGS_NAMESPACE` are exposed as named exports.
+- Feature-flagged fallback: on profiles (or test mocks) without a settings
+  service, wiring is skipped and the composition `config` is used as-is, so
+  behavior is unchanged.
+
 ## [0.1.5] - 2026-08-20
 
 ### Fixed
@@ -71,7 +87,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the dsh `ctx.web` seam (no DeepSeek dependency), with automatic proxy
   resolution.
 
-[Unreleased]: https://github.com/gausszhou/dsh-web-search-local/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/gausszhou/dsh-web-search-local/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/gausszhou/dsh-web-search-local/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/gausszhou/dsh-web-search-local/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/gausszhou/dsh-web-search-local/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/gausszhou/dsh-web-search-local/compare/v0.1.2...v0.1.3

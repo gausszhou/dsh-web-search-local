@@ -142,6 +142,16 @@ config:
 - 错误遵循 seam 的 provider 契约：失败时抛 `WebError`，code 为 `WEB_PROVIDER_ERROR`（引擎/传输/超时，引擎错误会聚合进 message）或 `WEB_ABORTED`（调用方取消）——与官方 provider 使用同一套错误词汇。
 - `web_fetch` 需要 `tool-web` 的 `fetch: true`；自带的 `standard` agent 预设默认是 `fetch: false`——把预设复制到 `$DSH_HOME/.agent-presets/` 并在那里打开开关。
 
+## 配置与设置集成
+
+插件声明了一个 schemastery `Config` 架构（字段与 `defaultConfig()` 一一对应）并通过 dsh 的 settings 服务注册了一个设置命名空间（`web-search-local`）——内置的 `web-search-deepseek`、`shell`、`agent-loop` 等插件用的就是这套机制。这带来：
+
+- 配置经过校验与规范化，可通过 dsh 的 settings 服务持久化。
+- provider 每次搜索/抓取时读取**实时生效**的配置段：通过设置 UI 改动的值会在下一次调用立即生效，无需重启。（`Config` 与 `SETTINGS_NAMESPACE` 均作为具名导出。）
+- 在没有 settings 服务的 profile 里，行为与原来完全一致：仍走 `cordis.patch.yml` 传给 `apply(ctx, config)` 的组合配置。
+
+> 说明：在“插件配置”面板中**看得见**的那张卡片是一个**客户端** React 组件——内置插件（终端 / Agent 循环 / 网页搜索）的卡片都硬编码在 `dsh-client-ui-settings-plugins` 这个打包客户端包里。要让本插件在这套面板里出现可编辑卡片，还需要随包提供一个 `./client` 半端来注册 `settings.plugin.item` 卡片（见后文）。本插件的配置界面 = 上面的服务端 schema 集成 + 客户端卡片两部分。
+
 ## 许可证
 
 MIT

@@ -144,6 +144,16 @@ Remove the `web` override, the `web-search-deepseek` disable, and the inserted r
 - Errors follow the seam's provider contract: failures throw `WebError` with `WEB_PROVIDER_ERROR` (engine/transport/timeout, engine errors aggregated) or `WEB_ABORTED` (caller cancellation) — the same vocabulary the official providers use.
 - `web_fetch` needs `tool-web`'s `fetch: true`; the shipped `standard` agent preset ships with `fetch: false` — copy the preset to `$DSH_HOME/.agent-presets/` and flip it there.
 
+## Configuration & settings integration
+
+The plugin declares a schemastery `Config` schema (one field per entry of `defaultConfig()`) and registers a settings namespace (`web-search-local`) through dsh's settings service — the same mechanism the built-in `web-search-deepseek`, `shell`, and `agent-loop` plugins use. This gives you:
+
+- Config is validated and normalized, and can be persisted through dsh's settings service.
+- Each provider operation reads the **live** config section: a value changed through the settings UI takes effect on the next search/fetch with no reload. (`Config` and `SETTINGS_NAMESPACE` are also named exports.)
+- On a profile with no settings service, behavior is byte-for-byte the same as before: the composition `config` passed to `apply(ctx, config)` from `cordis.patch.yml` still wins.
+
+> The **visible card** in the "Plugin configuration" panel is a **client-side** React component — the built-in cards (Terminal / Agent loop / Web search) are hand-written inside the bundled `dsh-client-ui-settings-plugins` client package. For this external plugin to gain an editable card in that panel it must additionally ship a `./client` half that registers a `settings.plugin.item` card. So "the configuration UI" for this plugin = the server-side schema integration above **plus** a client card.
+
 ## License
 
 MIT
