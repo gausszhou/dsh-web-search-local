@@ -7,6 +7,18 @@
 
 ## [Unreleased]（未发布）
 
+## [0.2.1] - 2026-08-20
+
+### 变更
+
+- **`schemastery` 从 `peerDependencies` 移入 `dependencies`。** 它是插件直接
+  导入的第三方库，现在随安装自带，而非依赖宿主提供——与官方内置
+  `@deepseek-ai/dsh-web-search-deepseek` 插件的约定一致，也让脱离 dsh 宿主
+  的独立使用更自包含。
+- **peer 下限对齐到 `^0.1.0-rc.8`**（`@deepseek-ai/dsh-settings`、
+  `@deepseek-ai/dsh-web`），跟踪当前 dsh 生态版本。
+- **精简 `exports`：** `.` 入口改为纯字符串（移除裸 `types: null` 占位）。
+
 ## [0.2.0] - 2026-08-20
 
 ### 新增

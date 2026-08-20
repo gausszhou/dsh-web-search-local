@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-08-20
+
+### Changed
+
+- **`schemastery` moved from `peerDependencies` to `dependencies`.** It is a
+  third-party library the plugin directly imports, so it is now installed with
+  the package rather than expected from the host — matching the convention of
+  the official `@deepseek-ai/dsh-web-search-deepseek` plugin and making
+  standalone use (outside a dsh host) self-contained.
+- **Peer floors aligned to `^0.1.0-rc.8`** (`@deepseek-ai/dsh-settings`,
+  `@deepseek-ai/dsh-web`), tracking the current dsh ecosystem.
+- **Streamlined `exports`:** the `.` entry is now a plain string (removed the
+  bare `types: null` placeholder).
+
 ## [0.2.0] - 2026-08-20
 
 ### Added

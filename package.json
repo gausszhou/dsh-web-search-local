@@ -1,6 +1,6 @@
 {
   "name": "@gausszhou/dsh-web-search-local",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "main": "index.js",
   "description": "Keyless multi-engine web search + page fetch providers for the dsh web seam (no DeepSeek dependency).",
@@ -31,10 +31,7 @@
     "node": ">=20.3"
   },
   "exports": {
-    ".": {
-      "types": null,
-      "default": "./index.js"
-    },
+    ".": "./index.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -55,9 +52,11 @@
     "registry": "https://registry.npmjs.org"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-settings": "^0.1.0-rc.7",
-    "@deepseek-ai/dsh-web": "^0.1.0-rc.7",
-    "@deepseek-ai/schemastery": ">=3.18.1"
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-web": "^0.1.0-rc.8"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-settings": "0.1.0-rc.8",
