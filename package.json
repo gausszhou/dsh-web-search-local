@@ -1,6 +1,6 @@
 {
   "name": "@gausszhou/dsh-web-search-local",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "main": "index.js",
   "description": "Keyless multi-engine web search + page fetch providers for the dsh web seam (no DeepSeek dependency).",
@@ -14,6 +14,7 @@
     "index.js",
     "README.md",
     "README.zh-CN.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "keywords": [
@@ -28,8 +29,11 @@
     "node": ">=20.3"
   },
   "scripts": {
-    "test": "node tests/test-p0.mjs && node tests/test-p1.mjs",
-    "test:p2": "node tests/test-p2.mjs"
+    "test": "npm run test:p0 && npm run test:p1",
+    "test:p0": "node tests/test-p0.mjs && node tests/test-p0-tool.mjs",
+    "test:p1": "node tests/test-p1.mjs",
+    "test:p2": "node tests/test-p2.mjs",
+    "prepublishOnly": "npm test"
   },
   "publishConfig": {
     "access": "public",

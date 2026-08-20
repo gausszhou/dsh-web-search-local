@@ -1326,23 +1326,24 @@ function registerEngineSearchTool(ctx, cfg) {
       schema: {
         type: 'object',
         additionalProperties: false,
+        required: ['sources', 'truncated'],
         properties: {
           content: { type: 'string' },
           sources: {
             type: 'array',
-            required: true,
             items: {
               type: 'object',
               additionalProperties: false,
+              required: ['url'],
               properties: {
-                url: { type: 'string', required: true },
+                url: { type: 'string' },
                 title: { type: 'string' },
                 snippet: { type: 'string' },
                 publishedAt: { type: 'string' },
               },
             },
           },
-          truncated: { type: 'boolean', required: true },
+          truncated: { type: 'boolean' },
         },
       },
       render: (_args, value) => [{ type: 'text', text: formatSearchOutput(value) }],
@@ -1364,7 +1365,7 @@ function registerEngineSearchTool(ctx, cfg) {
       }
     },
     presentCall: (args) => ({ card: 'generic', title: args.query, kind: 'search', rawInput: args.query }),
-    presentResult,
+    presentResult: presentSearchResult,
   })
 }
 
