@@ -38,7 +38,13 @@ Node 进程**不会**自动使用操作系统/浏览器的代理。如果 DuckDu
 npm install @gausszhou/dsh-web-search-local
 ```
 
-然后在你的 profile 的 `cordis.patch.yml`（web profile 即 `$DSH_HOME/profiles/web/cordis.patch.yml`）中加入：
+或者用 dsh CLI 一步注册为插件：
+
+```bash
+dsh plugin add @gausszhou/dsh-web-search-local
+```
+
+然后在你的 profile 的 `cordis.patch.yml`（web profile 即 `$DSH_HOME/profiles/web/cordis.patch.yml`）中切换 provider 并禁用内置的 DeepSeek provider：
 
 ```yaml
 - id: web
