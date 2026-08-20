@@ -44,5 +44,10 @@
     "@deepseek-ai/dsh-settings": ">=0.1.0-rc.0",
     "@deepseek-ai/dsh-web": ">=0.1.0-rc.0",
     "@deepseek-ai/schemastery": ">=3.18.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-settings": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-web": "0.1.0-rc.8",
+    "@deepseek-ai/schemastery": "3.18.1"
   }
 }
